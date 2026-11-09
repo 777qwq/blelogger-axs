@@ -36,10 +36,58 @@ def macho_archs(path):
     return [(cputype, cpusubtype & 0x00FFFFFF)]
 
 
+def macho_slices(path):
+    """返回 [(cputype, cpusubtype, offset, size)]。"""
+    data = open(path, "rb").read()
+    magic_be = struct.unpack(">I", data[:4])[0]
+    out = []
+    if magic_be in (0xCAFEBABE, 0xCAFEBABF):
+        count = struct.unpack(">I", data[4:8])[0]
+        wide = magic_be == 0xCAFEBABF
+        step = 32 if wide else 20
+        for i in range(count):
+            base = 8 + i * step
+            cputype, cpusubtype = struct.unpack(">ii", data[base:base + 8])
+            if wide:
+                offset, size = struct.unpack(">QQ", data[base + 8:base + 24])
+            else:
+                offset, size = struct.unpack(">II", data[base + 8:base + 16])
+            out.append((cputype, cpusubtype & 0x00FFFFFF, offset, size))
+        return out
+
+    cputype, cpusubtype = struct.unpack("<ii", data[4:12])
+    return [(cputype, cpusubtype & 0x00FFFFFF, 0, len(data))]
+
+
+def slice_segments(path, subtype):
+    """取指定 subtype 切片里的所有段名。"""
+    data = open(path, "rb").read()
+    for cpu, sub, offset, size in macho_slices(path):
+        if cpu != ARM64 or sub != subtype:
+            continue
+        slice_data = data[offset:offset + size]
+        ncmds = struct.unpack_from("<I", slice_data, 16)[0]
+        off = 32
+        names = []
+        for _ in range(ncmds):
+            cmd, cmdsize = struct.unpack_from("<II", slice_data, off)
+            if cmd == 0x19:  # LC_SEGMENT_64
+                names.append(slice_data[off + 8:off + 24].rstrip(b"\0").decode("utf-8", "replace"))
+            off += cmdsize
+        return names
+    return []
+
+
 def assert_arm64e(path, label):
-    archs = macho_archs(path)
+    archs = [(c, s) for c, s, _, _ in macho_slices(path)]
     assert (ARM64, ARM64E_SUBTYPE) in archs, \
         label + " 缺 arm64e 切片，arm64e 设备上加载会失败：" + repr(archs)
+
+    # 只有架构标签不够。objc 的 class_ro_t* 需要 ptrauth 签名，
+    # 没有 __AUTH 段就是"假 arm64e"，进设置会 SIGBUS（readClass 认签失败）。
+    segs = slice_segments(path, ARM64E_SUBTYPE)
+    assert any(s.startswith("__AUTH") for s in segs), \
+        label + " 的 arm64e 切片没有 __AUTH 段，objc 指针未签名，加载会崩：" + repr(segs)
     return archs
 
 REQUIRED = [
