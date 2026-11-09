@@ -1,6 +1,6 @@
 Package: com.qwq.blelogger
 Name: BLE Logger
-Version: 1.3.1
+Version: 1.3.2
 Architecture: iphoneos-arm64
 Description: 不注入 App 的 BLE 指令记录器：插件自己连设备，帧显示在设置面板
  只注入 SpringBoard。填目标设备名后自动扫描、连接、订阅所有 Notify 特征，

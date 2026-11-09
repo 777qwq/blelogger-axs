@@ -2,14 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- 只注入 SpringBoard：插件自己当 BLE Central 去连设备，
-         不需要出现在任何 App 进程里。空 Filter 会拖慢所有 App 启动。 -->
+    <!-- 全注入：注入哪个 App 由用户在面板里勾，Filter 没法静态写死。
+         每个进程加载后先看 bundleId —— SpringBoard 起直连扫描器，
+         第三方 App 查白名单，没勾到的立刻 return，不做任何 hook。 -->
     <key>Filter</key>
-    <dict>
-        <key>Bundles</key>
-        <array>
-            <string>com.apple.springboard</string>
-        </array>
-    </dict>
+    <dict/>
 </dict>
 </plist>

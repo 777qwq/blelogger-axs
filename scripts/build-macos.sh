@@ -8,7 +8,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-VER=${VER:-1.3.1}
+VER=${VER:-1.3.2}
 TARGET_DYLIB=AxsBLELogger
 BIN_DIR=${BIN_DIR:-/tmp/axsbuild}
 rm -rf "$BIN_DIR" && mkdir -p "$BIN_DIR"

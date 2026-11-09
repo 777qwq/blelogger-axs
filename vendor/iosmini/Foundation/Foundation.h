@@ -51,6 +51,8 @@ enum { NSOrderedAscending = -1, NSOrderedSame = 0, NSOrderedDescending = 1 };
 + (instancetype)errorWithDomain:(NSString *)domain code:(NSInteger)code userInfo:(id)info;
 @end
 
+typedef NSComparisonResult (^NSComparator)(id obj1, id obj2);
+
 @interface NSString : NSObject
 + (instancetype)string;
 + (instancetype)stringWithUTF8String:(const char *)s;
@@ -73,6 +75,8 @@ enum { NSOrderedAscending = -1, NSOrderedSame = 0, NSOrderedDescending = 1 };
 - (NSString *)stringByReplacingOccurrencesOfString:(NSString *)a withString:(NSString *)b;
 - (NSComparisonResult)compare:(NSString *)s;
 - (NSComparisonResult)caseInsensitiveCompare:(NSString *)s;
+- (NSComparisonResult)localizedCaseInsensitiveCompare:(NSString *)s;
+- (NSComparisonResult)localizedCompare:(NSString *)s;
 - (BOOL)localizedCaseInsensitiveContainsString:(NSString *)s;
 - (NSString *)stringByTrimmingCharactersInSet:(id)set;
 - (NSString *)lastPathComponent;
@@ -127,6 +131,9 @@ enum { NSOrderedAscending = -1, NSOrderedSame = 0, NSOrderedDescending = 1 };
 - (void)removeObjectAtIndex:(NSUInteger)i;
 - (void)removeLastObject;
 - (void)insertObject:(id)o atIndex:(NSUInteger)i;
+- (void)addObjectsFromArray:(NSArray *)other;
+- (void)sortUsingComparator:(NSComparator)cmptr;
+- (NSArray *)sortedArrayUsingComparator:(NSComparator)cmptr;
 @end
 
 @interface NSDictionary : NSObject

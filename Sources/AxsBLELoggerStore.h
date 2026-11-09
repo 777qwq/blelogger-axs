@@ -15,6 +15,13 @@ void AxsBLELoggerLoadFrames(void);
 void AxsBLELoggerAppendFrame(NSString *dir, NSString *svc, NSString *chr, NSString *hex);
 void AxsBLELoggerClearFrames(void);
 
+// 注入式抓包的数据单独存一份。
+// 两个进程（SpringBoard 和被抓的 App）各持一份内存副本，写同一个 plist
+// 必然互相覆盖，所以物理上分开，面板读的时候合并。
+NSArray *AxsBLELoggerReadAppFrames(void);
+void AxsBLELoggerAppendAppFrame(NSString *dir, NSString *svc, NSString *chr, NSString *hex);
+void AxsBLELoggerClearAppFrames(void);
+
 // 附近设备: [{ name, uuid, rssi }]  最多 20 条
 NSArray *AxsBLELoggerReadDevices(void);
 void AxsBLELoggerSetDevices(NSArray *devices);

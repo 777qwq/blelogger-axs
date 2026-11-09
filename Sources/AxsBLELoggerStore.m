@@ -154,6 +154,87 @@ void AxsBLELoggerClearFrames(void) {
     axs_store_schedule_flush();
 }
 
+#pragma mark - 注入式抓包（独立文件）
+
+static NSString *const kAppDataPath = @"/var/mobile/Library/Preferences/com.qwq.blelogger.app.plist";
+
+static NSMutableArray *g_appFrames = nil;
+static BOOL g_appLoaded = NO;
+static BOOL g_appDirty = NO;
+static BOOL g_appFlushing = NO;
+
+static NSMutableDictionary *axs_app_read_data(void) {
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kAppDataPath];
+    return [d isKindOfClass:[NSDictionary class]] ? [d mutableCopy] : [NSMutableDictionary dictionary];
+}
+
+static void axs_app_load_locked(void) {
+    if (g_appLoaded) return;
+    NSArray *frames = axs_app_read_data()[@"frames"];
+    g_appFrames = [frames isKindOfClass:[NSArray class]] ? [frames mutableCopy] : [NSMutableArray array];
+    g_appLoaded = YES;
+}
+
+static void axs_app_schedule_flush(void) {
+    @synchronized (g_lock) {
+        if (g_appFlushing) return;
+        g_appFlushing = YES;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSArray *copy = nil;
+        @synchronized (g_lock) {
+            g_appFlushing = NO;
+            if (!g_appDirty) return;
+            g_appDirty = NO;
+            copy = [g_appFrames copy];
+        }
+        NSMutableDictionary *data = axs_app_read_data();
+        data[@"frames"] = copy ?: @[];
+        [data writeToFile:kAppDataPath atomically:YES];
+    });
+}
+
+void AxsBLELoggerAppendAppFrame(NSString *dir, NSString *svc, NSString *chr, NSString *hex) {
+    axs_store_init();
+    @synchronized (g_lock) {
+        axs_app_load_locked();
+
+        NSDateFormatter *df = [[NSDateFormatter alloc] init];
+        df.dateFormat = @"HH:mm:ss";
+
+        [g_appFrames addObject:@{
+            @"t":   [df stringFromDate:[NSDate date]],
+            @"dir": dir ?: @"?",
+            @"svc": svc ?: @"?",
+            @"chr": chr ?: @"?",
+            @"hex": hex ?: @"",
+            @"src": @"app",
+        }];
+        while (g_appFrames.count > kMaxFrames) [g_appFrames removeObjectAtIndex:0];
+        g_appDirty = YES;
+    }
+    axs_app_schedule_flush();
+}
+
+NSArray *AxsBLELoggerReadAppFrames(void) {
+    axs_store_init();
+    @synchronized (g_lock) {
+        axs_app_load_locked();
+        return [g_appFrames copy];
+    }
+}
+
+void AxsBLELoggerClearAppFrames(void) {
+    axs_store_init();
+    @synchronized (g_lock) {
+        g_appFrames = [NSMutableArray array];
+        g_appLoaded = YES;
+        g_appDirty = YES;
+    }
+    axs_app_schedule_flush();
+}
+
 #pragma mark - 设备列表
 
 NSArray *AxsBLELoggerReadDevices(void) {

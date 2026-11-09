@@ -18,6 +18,7 @@
 
 static NSString *const kConfigPath   = @"/var/mobile/Library/Preferences/com.qwq.blelogger.plist";
 static NSString *const kDataPath     = @"/var/mobile/Library/Preferences/com.qwq.blelogger.capture.plist";
+static NSString *const kAppDataPath  = @"/var/mobile/Library/Preferences/com.qwq.blelogger.app.plist";
 static NSString *const kPrefsChanged = @"com.qwq.blelogger.preferences-changed";
 static const NSUInteger kShowFrames  = 15;
 static const NSUInteger kShowDevices = 8;
@@ -26,6 +27,62 @@ static const NSUInteger kShowLatest  = 6;
 static NSDictionary *AXRead(NSString *path) {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:path];
     return [d isKindOfClass:[NSDictionary class]] ? d : @{};
+}
+
+// ---- 已安装的第三方 App ----
+//
+// 不用 LSApplicationWorkspace：1.2.1 就是被 allInstalledApplications 这个
+// 已经被移除的方法坑到闪退的。直接扫容器目录读 Info.plist，任何版本都成立，
+// 而且不需要私有框架。
+static NSArray *g_axsApps = nil;
+
+static NSArray *AXInstalledApps(void) {
+    if (g_axsApps) return g_axsApps;
+
+    NSMutableDictionary *byId = [NSMutableDictionary dictionary];
+    NSFileManager *fm = [NSFileManager defaultManager];
+
+    void (^scanContainer)(NSString *) = ^(NSString *root) {
+        for (NSString *uuid in [fm contentsOfDirectoryAtPath:root error:NULL]) {
+            NSString *dir = [root stringByAppendingPathComponent:uuid];
+            for (NSString *item in [fm contentsOfDirectoryAtPath:dir error:NULL]) {
+                if (![item hasSuffix:@".app"]) continue;
+                NSString *info = [[[dir stringByAppendingPathComponent:item]
+                                   stringByAppendingPathComponent:@"Info.plist"] copy];
+                NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:info];
+                NSString *bid = d[@"CFBundleIdentifier"];
+                if (![bid isKindOfClass:[NSString class]] || bid.length == 0) continue;
+                if ([bid hasPrefix:@"com.apple."]) continue;
+                NSString *name = d[@"CFBundleDisplayName"] ?: d[@"CFBundleName"] ?: bid;
+                if (![name isKindOfClass:[NSString class]] || name.length == 0) name = bid;
+                byId[bid] = name;
+            }
+        }
+    };
+
+    // App Store 装的在 UUID 容器里；越狱 App / TrollStore 装的直接放 /Applications
+    scanContainer(@"/var/containers/Bundle/Application");
+    for (NSString *item in [fm contentsOfDirectoryAtPath:@"/Applications" error:NULL]) {
+        if (![item hasSuffix:@".app"]) continue;
+        NSString *info = [@"/Applications" stringByAppendingPathComponent:
+                          [item stringByAppendingPathComponent:@"Info.plist"]];
+        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:info];
+        NSString *bid = d[@"CFBundleIdentifier"];
+        if (![bid isKindOfClass:[NSString class]] || bid.length == 0) continue;
+        if ([bid hasPrefix:@"com.apple."]) continue;
+        NSString *name = d[@"CFBundleDisplayName"] ?: d[@"CFBundleName"] ?: bid;
+        if (![name isKindOfClass:[NSString class]] || name.length == 0) name = bid;
+        byId[bid] = name;
+    }
+
+    NSMutableArray *list = [NSMutableArray array];
+    for (NSString *bid in byId) {
+        [list addObject:@{ @"bid": bid, @"name": byId[bid] }];
+    }
+    g_axsApps = [list sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [a[@"name"] localizedCaseInsensitiveCompare:b[@"name"]];
+    }];
+    return g_axsApps;
 }
 
 static NSString *AXString(id v) {
@@ -133,8 +190,25 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
 }
 
 - (NSArray *)frames {
-    NSArray *f = self.capture[@"frames"];
-    return [f isKindOfClass:[NSArray class]] ? f : @[];
+    // 直连模式写 capture.plist，注入模式写 app.plist（两个进程各持一份
+    // 内存副本，写同一个文件必然互相覆盖）。这里合并后按时间排。
+    NSMutableArray *all = [NSMutableArray array];
+    NSArray *direct = AXRead(kDataPath)[@"frames"];
+    if ([direct isKindOfClass:[NSArray class]]) [all addObjectsFromArray:direct];
+    NSArray *injected = AXRead(kAppDataPath)[@"frames"];
+    if ([injected isKindOfClass:[NSArray class]]) [all addObjectsFromArray:injected];
+
+    [all sortUsingComparator:^NSComparisonResult(NSDictionary *x, NSDictionary *y) {
+        NSString *a = AXString(x[@"t"]) ?: @"";
+        NSString *b = AXString(y[@"t"]) ?: @"";
+        return [a compare:b];
+    }];
+    return all;
+}
+
+- (NSArray *)selectedApps {
+    id a = self.config[@"apps"];
+    return [a isKindOfClass:[NSArray class]] ? a : @[];
 }
 
 - (NSArray *)devices {
@@ -283,6 +357,41 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
         PSSpecifier *clear = AXButtonRow(@"清除目标（只扫描）", self, @selector(clearTarget:));
         [items addObject:clear];
     }
+
+    // ---- 注入 App（抓 App 发出去的指令）----
+    NSArray *selected = self.selectedApps;
+    PSSpecifier *appGroup = AXGroup([NSString stringWithFormat:@"注入 App · 已选 %lu 个",
+                                     (unsigned long)selected.count]);
+    [appGroup setProperty:
+        @"这里解决的是「App 发出去的指令」——散热器、灯带这类必须靠 App 才会发命令的设备。\n"
+        @"勾上之后，把该 App 从后台划掉再打开，注入才生效。\n"
+        @"能自己连的设备走上面的「目标设备」，两条路互不影响，可以同时开。"
+                  forKey:@"footerText"];
+    [items addObject:appGroup];
+
+    NSArray *apps = AXInstalledApps();
+    if (apps.count == 0) {
+        PSSpecifier *noneApp = [PSSpecifier preferenceSpecifierNamed:@"没扫到第三方 App"
+                                                              target:nil set:nil get:nil detail:nil
+                                                                cell:PSTitleValueCell edit:nil];
+        [noneApp setProperty:@"点下面重新扫描" forKey:@"value"];
+        [items addObject:noneApp];
+    } else {
+        for (NSDictionary *a in apps) {
+            PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:a[@"name"]
+                                                              target:self
+                                                                 set:@selector(setApp:specifier:)
+                                                                 get:@selector(getApp:)
+                                                              detail:nil
+                                                                cell:PSSwitchCell
+                                                                edit:nil];
+            [row setProperty:a[@"bid"] forKey:@"axs_bid"];
+            [items addObject:row];
+        }
+    }
+
+    PSSpecifier *refreshApps = AXButtonRow(@"重新扫描 App 列表", self, @selector(refreshApps:));
+    [items addObject:refreshApps];
 
     // ---- 最近值（按特征去重）----
     NSArray *frames = self.frames;
@@ -505,7 +614,39 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
     d[@"frames"] = @[];
     [d writeToFile:kDataPath atomically:YES];
 
+    // 注入模式那份也要清，否则用户点了「清空」还剩一半
+    NSMutableDictionary *a = [AXRead(kAppDataPath) mutableCopy];
+    if (!a) a = [NSMutableDictionary dictionary];
+    a[@"frames"] = @[];
+    [a writeToFile:kAppDataPath atomically:YES];
+
     self.lastCount = 0;
+    [self reloadSpecifiers];
+}
+
+#pragma mark - 注入 App 白名单
+
+- (id)getApp:(PSSpecifier *)specifier {
+    NSString *bid = AXString([specifier propertyForKey:@"axs_bid"]);
+    if (bid.length == 0) return @NO;
+    return [self.selectedApps containsObject:bid] ? @YES : @NO;
+}
+
+- (void)setApp:(id)value specifier:(PSSpecifier *)specifier {
+    NSString *bid = AXString([specifier propertyForKey:@"axs_bid"]);
+    if (bid.length == 0) return;
+
+    NSMutableArray *cur = [self.selectedApps mutableCopy];
+    if ([value boolValue]) {
+        if (![cur containsObject:bid]) [cur addObject:bid];
+    } else {
+        [cur removeObject:bid];
+    }
+    AXWriteConfig(@"apps", cur);
+}
+
+- (void)refreshApps:(PSSpecifier *)specifier {
+    g_axsApps = nil;          // 丢掉缓存，下次 -specifiers 重扫
     [self reloadSpecifiers];
 }
 
