@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "name": "BLELogger",
+  "id": "blelogger",
+  "display_name": "BLE Logger",
+  "class_prefix": "AxsBLELogger",
+  "symbol_prefix": "axs_blelogger",
+  "package": "com.qwq.blelogger",
+  "bundle": "",
+  "sdk_version": "16.5",
+  "minimum_ios": "15.0",
+  "preferences": true,
+  "slider": false,
+  "github_actions": true
+}

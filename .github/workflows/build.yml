@@ -1,0 +1,38 @@
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # 构建链自包含：clang + ld64.lld + 仓库里的空存根，不依赖 Theos 与 Xcode
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装工具链
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang lld dpkg-dev
+          clang --version | head -1
+
+      - name: 构建
+        run: |
+          chmod +x build-local.sh
+          ./build-local.sh
+
+      - name: 检查产物
+        run: |
+          set -e
+          DEB=$(ls com.qwq.blelogger_*_iphoneos-arm64.deb | head -1)
+          dpkg-deb -c "$DEB"
+          python3 scripts/check_package.py "$DEB"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blelogger-deb
+          path: "*.deb"
+          if-no-files-found: error

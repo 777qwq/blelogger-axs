@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>title</key><string>BLE Logger</string>
+    <key>items</key>
+    <array>
+        <dict>
+            <key>cell</key><string>PSGroupCell</string>
+            <key>label</key><string>抓包</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSSwitchCell</string>
+            <key>label</key><string>启用 BLE Logger</string>
+            <key>key</key><string>enabled</string>
+            <key>defaults</key><string>com.qwq.blelogger</string>
+            <key>default</key><true/>
+            <key>footerText</key><string>关闭后所有 App 都不注入，悬浮球也不会出现。</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSGroupCell</string>
+            <key>label</key><string>注入这些 App</string>
+            <key>footerText</key><string>一个都不勾 = 注入全部第三方 App。勾选后只注入勾选的，需重启目标 App 生效。</string>
+        </dict>
+    </array>
+</dict>
+</plist>
