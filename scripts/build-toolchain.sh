@@ -49,15 +49,21 @@ BASE=(-nostdinc -isystem vendor/iosmini
 
 build_arch() {
   local A=$1
+  local EXTRA=()
+  # clang 11 默认不签指针，得显式打开；否则 objc 的 class_ro_t* 没有
+  # ptrauth 签名，运行时 readClass 认签失败直接 SIGBUS。
+  if [ "$A" = "arm64e" ]; then
+    EXTRA+=(-fptrauth-calls -fptrauth-returns -fptrauth-indirect-gotos)
+  fi
   echo "== $A =="
-  "$CLANG" -target "$A-apple-ios15.0" -Wl,-arch,"$A" "${BASE[@]}" -dynamiclib \
+  "$CLANG" -target "$A-apple-ios15.0" "${EXTRA[@]}" -Wl,-arch,"$A" "${BASE[@]}" -dynamiclib \
     -Wl,-install_name,/Library/MobileSubstrate/DynamicLibraries/${TARGET_DYLIB}.dylib \
     -framework UIKit -framework Foundation -framework CoreBluetooth -framework CoreFoundation \
     -lSystem -lobjc \
     Sources/*.m "$BIN_DIR/Hooks.m" \
     -o "$BIN_DIR/${TARGET_DYLIB}_${A}.dylib"
 
-  "$CLANG" -target "$A-apple-ios15.0" -Wl,-arch,"$A" "${BASE[@]}" -bundle \
+  "$CLANG" -target "$A-apple-ios15.0" "${EXTRA[@]}" -Wl,-arch,"$A" "${BASE[@]}" -bundle \
     -framework UIKit -framework Foundation -framework CoreFoundation \
     -lSystem -lobjc \
     AxsBLELoggerPrefs/*.m \
