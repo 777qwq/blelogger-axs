@@ -60,6 +60,45 @@ static void AxsRecordNotify(CBCharacteristic *ch) {
 
 #pragma mark - hook 实现
 
+// substrate / ellekit 的 hook 入口。设备上两者必有其一，都导出这个符号。
+//
+// 用 dlsym 而不是直接声明 + 弱链接：链接时符号未定义，-O2 会把
+// 「if (符号)」直接折成常量假，整段 MSHookMessageEx 调用被删掉，
+// 编出来的包看着正常，实际还在走 method_setImplementation。
+typedef void (*AxsMSHookFn)(Class cls, SEL sel, IMP imp, IMP *result);
+
+// mini 的 dlfcn.h 只给了 RTLD_LAZY / RTLD_NOW，Darwin 的 RTLD_DEFAULT
+// 定义是 -2，自己补上。含义是「在所有已加载镜像里按全局作用域找」。
+#ifndef RTLD_DEFAULT
+#define RTLD_DEFAULT ((void *)-2)
+#endif
+
+static AxsMSHookFn AxsMSHook(void) {
+    static AxsMSHookFn fn = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        fn = (AxsMSHookFn)dlsym(RTLD_DEFAULT, "MSHookMessageEx");
+    });
+    return fn;
+}
+
+// 换方法的实现，返回原实现。优先 substrate，退到 runtime。
+static BOOL AxsHookMethod(Class cls, SEL sel, IMP imp, IMP *orig) {
+    if (!cls || !sel || !imp) return NO;
+
+    AxsMSHookFn hook = AxsMSHook();
+    if (hook) {
+        hook(cls, sel, imp, orig);
+        return orig && *orig != NULL;
+    }
+
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m) return NO;
+    if (orig) *orig = method_getImplementation(m);
+    method_setImplementation(m, imp);
+    return YES;
+}
+
 static void AxsHookedWrite(id self, SEL _cmd, NSData *data, CBCharacteristic *ch, CBCharacteristicWriteType type) {
     @autoreleasepool {
         AxsRecordWrite(data, ch, type);
@@ -95,8 +134,10 @@ static void AxsHookDelegateClass(Class cls) {
         Method m = class_getInstanceMethod(cls, @selector(peripheral:didUpdateValueForCharacteristic:error:));
         if (!m) return;   // 这个类没实现，可能走消息转发，抓不到就算了
 
-        IMP orig = method_getImplementation(m);
-        method_setImplementation(m, (IMP)AxsHookedDidUpdate);
+        IMP orig = NULL;
+        AxsHookMethod(cls, @selector(peripheral:didUpdateValueForCharacteristic:error:),
+                      (IMP)AxsHookedDidUpdate, &orig);
+        if (!orig) return;
 
         if (g_clsCount < AXS_MAX_DELEGATE_CLASSES) {
             g_cls[g_clsCount] = cls;
@@ -121,17 +162,19 @@ static void AxsHookInstall(void) {
     Class peripheral = NSClassFromString(@"CBPeripheral");
     if (!peripheral) return;
 
-    Method mw = class_getInstanceMethod(peripheral, @selector(writeValue:forCharacteristic:type:));
-    if (mw) {
-        g_origWrite = (void (*)(id, SEL, NSData *, CBCharacteristic *, CBCharacteristicWriteType))method_getImplementation(mw);
-        method_setImplementation(mw, (IMP)AxsHookedWrite);
-    }
-
-    Method md = class_getInstanceMethod(peripheral, @selector(setDelegate:));
-    if (md) {
-        g_origSetDelegate = (void (*)(id, SEL, id))method_getImplementation(md);
-        method_setImplementation(md, (IMP)AxsHookedSetDelegate);
-    }
+    // 不用 method_setImplementation，改用 substrate 的 MSHookMessageEx。
+    //
+    // CBPeripheral 在 dyld shared cache 里，直接改 method_t 在两个地方会翻车：
+    // 一是 arm64e 上 IMP 要带 ptrauth 签名，裸函数指针塞进去，调用时认签失败；
+    // 二是共享缓存里的方法列表有预优化版本，改了内存里的那份，objc_msgSend
+    // 的 inline cache 未必跟着刷。
+    //
+    // 1.1 那个探针（rc-speaker-tile/PWProbe.x）用 Logos 的 %hook，编出来就是
+    // MSHookMessageEx，所以它在同样过滤规则下能跑。这里对齐它的做法。
+    AxsHookMethod(peripheral, @selector(writeValue:forCharacteristic:type:),
+                  (IMP)AxsHookedWrite, (IMP *)&g_origWrite);
+    AxsHookMethod(peripheral, @selector(setDelegate:),
+                  (IMP)AxsHookedSetDelegate, (IMP *)&g_origSetDelegate);
 
     g_installed = YES;
 }
