@@ -50,10 +50,14 @@ BASE=(-nostdinc -isystem vendor/iosmini
 build_arch() {
   local A=$1
   local EXTRA=()
-  # clang 11 默认不签指针，得显式打开；否则 objc 的 class_ro_t* 没有
-  # ptrauth 签名，运行时 readClass 认签失败直接 SIGBUS。
+  # 老 clang（Theos 自带的 11）默认不签指针，得显式打开；新 clang 顶到
+  # arm64e triple 就自己开。用探测的方式加，免得新编译器报 unknown argument。
   if [ "$A" = "arm64e" ]; then
-    EXTRA+=(-fptrauth-calls -fptrauth-returns -fptrauth-indirect-gotos)
+    for f in -fptrauth-calls -fptrauth-returns -fptrauth-indirect-gotos; do
+      if echo 'int x;' | "$CLANG" -x c - -fsyntax-only "$f" >/dev/null 2>&1; then
+        EXTRA+=("$f")
+      fi
+    done
   fi
   echo "== $A =="
   "$CLANG" -target "$A-apple-ios15.0" "${EXTRA[@]}" -Wl,-arch,"$A" "${BASE[@]}" -dynamiclib \
