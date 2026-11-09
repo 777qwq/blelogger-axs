@@ -1,14 +1,14 @@
-// 注入式抓包：hook CoreBluetooth，抓目标 App 发出的和收到的每一帧。
+// 注入式抓包：hook CoreBluetooth，记录目标 App 收发的每一帧。
 //
-// 这是 1.3.0 删掉、现在补回来的一半能力。两种抓法解决的问题不同：
+// 思路来自 rc-speaker-tile 的 PWProbe.x（1.1 探针）：
+// 只 hook CoreBluetooth 这个通用框架，跟设备品牌无关，散热器、耳机、
+// 手环都能抓。区别是 PWProbe 只把日志写到文件，这里落进设置面板。
 //
-//   直连（Scanner，跑在 SpringBoard）  设备推上来的帧，不需要设备有 App
-//   注入（本文件，跑在目标 App 里）    App 发出去的帧 + 设备回给 App 的帧
+// 原版只 hook 了写入。设备主动推给 App 的帧走的是 delegate 回调，
+// 补上这一半才能看到耳机按键事件这类上行数据。
 //
-// 散热器这类「必须用 App 才发指令」的设备，只有注入才看得到发出去的包。
-//
-// 不用 Logos：build-macos.sh 会把 .xm 里的 %ctor 用 sed 换掉，纯 runtime
-// 写在这里省一层转换，编译行为在 Linux / macOS 上一致。
+// 不用 Logos：build-macos.sh 会把 .xm 的 %ctor 用 sed 换掉，纯 runtime
+// 写在这里，Linux / macOS 两套工具链编译行为一致。
 
 #import "AxsBLELoggerStore.h"
 #import <CoreBluetooth/CoreBluetooth.h>
@@ -17,10 +17,16 @@
 
 static void (*g_origWrite)(id, SEL, NSData *, CBCharacteristic *, CBCharacteristicWriteType) = NULL;
 static void (*g_origSetDelegate)(id, SEL, id) = NULL;
-static void (*g_origDidUpdate)(id, SEL, CBPeripheral *, CBCharacteristic *, id) = NULL;
 
-static BOOL g_delegateHooked = NO;
-static BOOL g_installed = NO;
+// delegate 的类不固定（每个 App 自己写），原实现要按类分别存，
+// 不能像只抓一个 delegate 那样用全局单指针。
+// 用定长 C 数组而不是 NSDictionary：存的 IMP 是函数指针，ARC 下转 id 很别扭，
+// 而且这里就几十个类，数组查一遍比字典还快。
+#define AXS_MAX_DELEGATE_CLASSES 64
+static Class g_cls[AXS_MAX_DELEGATE_CLASSES];
+static IMP   g_imp[AXS_MAX_DELEGATE_CLASSES];
+static int   g_clsCount = 0;
+static BOOL  g_installed = NO;
 
 #pragma mark - 记录
 
@@ -33,7 +39,7 @@ static void AxsRecordWrite(NSData *data, CBCharacteristic *ch, CBCharacteristicW
         AxsBLELoggerHex(data));
 }
 
-static void AxsRecordNotify(CBPeripheral *p, CBCharacteristic *ch) {
+static void AxsRecordNotify(CBCharacteristic *ch) {
     NSData *v = ch.value;
     if (!v.length) return;
     AxsBLELoggerAppendAppFrame(
@@ -54,23 +60,47 @@ static void AxsHookedWrite(id self, SEL _cmd, NSData *data, CBCharacteristic *ch
 
 static void AxsHookedDidUpdate(id self, SEL _cmd, CBPeripheral *p, CBCharacteristic *ch, id err) {
     @autoreleasepool {
-        if (!err) AxsRecordNotify(p, ch);
+        if (!err) AxsRecordNotify(ch);
     }
-    if (g_origDidUpdate) g_origDidUpdate(self, _cmd, p, ch, err);
-}
-
-// App 通常在拿到 CBPeripheral 后调 setDelegate:。这里把 delegate 身上的
-// didUpdateValue 换掉，才能看到设备主动推给 App 的帧。
-static void AxsHookedSetDelegate(id self, SEL _cmd, id delegate) {
-    if (delegate && !g_delegateHooked) {
-        Class cls = object_getClass(delegate);
-        Method m = class_getInstanceMethod(cls, @selector(peripheral:didUpdateValueForCharacteristic:error:));
-        if (m) {
-            g_origDidUpdate = (void (*)(id, SEL, CBPeripheral *, CBCharacteristic *, id))method_getImplementation(m);
-            method_setImplementation(m, (IMP)AxsHookedDidUpdate);
-            g_delegateHooked = YES;
+    // 找回这个 delegate 类自己的原实现，别把 App 的回调吃掉
+    Class cls = object_getClass(self);
+    for (int i = 0; i < g_clsCount; i++) {
+        if (g_cls[i] == cls) {
+            IMP orig = g_imp[i];
+            if (orig) {
+                ((void (*)(id, SEL, CBPeripheral *, CBCharacteristic *, id))orig)(self, _cmd, p, ch, err);
+            }
+            return;
         }
     }
+}
+
+static void AxsHookDelegateClass(Class cls) {
+    if (!cls) return;
+
+    @synchronized ([CBPeripheral class]) {
+        for (int i = 0; i < g_clsCount; i++) {
+            if (g_cls[i] == cls) return;   // 这个类已经换过了
+        }
+
+        Method m = class_getInstanceMethod(cls, @selector(peripheral:didUpdateValueForCharacteristic:error:));
+        if (!m) return;   // 这个类没实现，可能走消息转发，抓不到就算了
+
+        IMP orig = method_getImplementation(m);
+        method_setImplementation(m, (IMP)AxsHookedDidUpdate);
+
+        if (g_clsCount < AXS_MAX_DELEGATE_CLASSES) {
+            g_cls[g_clsCount] = cls;
+            g_imp[g_clsCount] = orig;
+            g_clsCount++;
+        }
+    }
+}
+
+// App 拿到 CBPeripheral 后第一件事就是 setDelegate:。在这里把 delegate
+// 身上的 didUpdateValue 换掉，才能看到设备主动推给 App 的帧。
+static void AxsHookedSetDelegate(id self, SEL _cmd, id delegate) {
+    if (delegate) AxsHookDelegateClass(object_getClass(delegate));
     if (g_origSetDelegate) g_origSetDelegate(self, _cmd, delegate);
 }
 
@@ -104,18 +134,20 @@ void AxsBLELoggerHookStart(void) {
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
         if (bid.length == 0) return;
 
-        // 系统进程一律不装 hook。SpringBoard 由 Scanner 负责（直连模式），
-        // 其余系统进程装进去没意义，还会拖慢每一个 App。
+        // 系统进程一律不装：抓的是第三方 App 的通信，塞进 SpringBoard、
+        // backboardd 这些进程只会拖慢系统，也没有要抓的东西。
         if ([bid hasPrefix:@"com.apple."]) return;
 
-        // 白名单：只有面板里勾了的 App 才 hook。
-        // 配置里没有 apps 数组 = 一个都不抓，避免装完就全量注入。
-        id apps = AxsBLELoggerReadConfig()[@"apps"];
-        if (![apps isKindOfClass:[NSArray class]] || ![apps containsObject:bid]) return;
+        // 总开关。配置里没写这个键（刚装好）时默认开，装完直接能用。
+        id enabled = AxsBLELoggerReadConfig()[@"enabled"];
+        if (enabled && ![enabled boolValue]) return;
 
         if (!NSClassFromString(@"CBPeripheral")) {
             dlopen("/System/Library/Frameworks/CoreBluetooth.framework/CoreBluetooth", RTLD_NOW);
         }
+        if (!NSClassFromString(@"CBPeripheral")) return;   // 这台设备没有 BLE
+
         AxsHookInstall();
+        AxsBLELoggerSetState([NSString stringWithFormat:@"已注入 %@", bid]);
     }
 }

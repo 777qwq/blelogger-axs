@@ -2,10 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- 全注入：注入哪个 App 由用户在面板里勾，Filter 没法静态写死。
-         每个进程加载后先看 bundleId —— SpringBoard 起直连扫描器，
-         第三方 App 查白名单，没勾到的立刻 return，不做任何 hook。 -->
+    <!-- 和 rc-speaker-tile 的 PWProbe 一致：只注入有 UIApplication 的进程，
+         也就是用户能点开的 App。daemon 和 SpringBoard 里没有要抓的 BLE 通信，
+         注进去只会拖慢系统。
+         真正装不装 hook，由 AxsBLELoggerHookStart 再判一次（跳过 com.apple.*）。 -->
     <key>Filter</key>
-    <dict/>
+    <dict>
+        <key>Classes</key>
+        <array>
+            <string>UIApplication</string>
+        </array>
+    </dict>
 </dict>
 </plist>

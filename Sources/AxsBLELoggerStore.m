@@ -189,8 +189,32 @@ static void axs_app_schedule_flush(void) {
             g_appDirty = NO;
             copy = [g_appFrames copy];
         }
+        // 多个 App 进程同时抓包时，各自内存里都有一份历史。直接整份覆盖
+        // 会把别的进程刚写的帧抹掉，所以写之前先并上盘上已有的，按内容去重。
         NSMutableDictionary *data = axs_app_read_data();
-        data[@"frames"] = copy ?: @[];
+        NSArray *disk = data[@"frames"];
+        NSMutableArray *merged = [NSMutableArray array];
+        // mini Foundation 里没有 NSMutableSet，拿字典当集合用
+        NSMutableDictionary *seen = [NSMutableDictionary dictionary];
+
+        for (NSArray *list in @[([disk isKindOfClass:[NSArray class]] ? disk : @[]), (copy ?: @[])]) {
+            for (NSDictionary *f in list) {
+                if (![f isKindOfClass:[NSDictionary class]]) continue;
+                NSString *key = [NSString stringWithFormat:@"%@|%@|%@|%@|%@",
+                                 f[@"t"] ?: @"", f[@"dir"] ?: @"",
+                                 f[@"chr"] ?: @"", f[@"hex"] ?: @"", f[@"src"] ?: @""];
+                if (seen[key]) continue;
+                seen[key] = @YES;
+                [merged addObject:f];
+            }
+        }
+
+        [merged sortUsingComparator:^NSComparisonResult(NSDictionary *x, NSDictionary *y) {
+            return [(x[@"t"] ?: @"") compare:(y[@"t"] ?: @"")];
+        }];
+        while (merged.count > kMaxFrames) [merged removeObjectAtIndex:0];
+
+        data[@"frames"] = merged;
         [data writeToFile:kAppDataPath atomically:YES];
     });
 }

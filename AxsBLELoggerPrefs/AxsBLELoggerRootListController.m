@@ -1,13 +1,13 @@
 // 设置面板：只读写 plist，不碰蓝牙、不枚举已安装 App。
 //
-// 1.2.1 点进来就崩的两个点，这里都已经不存在：
-// 1. -specifiers 里调 LSApplicationWorkspace 的 allInstalledApplications，
-//    iOS 16 上这个方法已经没了，performSelector 直接 unrecognized selector。
-//    新方案不注入 App，也就不需要 App 白名单，这段整个删掉。
-// 2. 悬浮窗那套 UIApplication/窗口层级的代码也不在面板里，面板只有 PSSpecifier。
+// 抓包跑在目标 App 自己的进程里（见 Sources/AxsBLELoggerHook.m），
+// 把帧写进 /var/mobile/Library/Preferences/com.qwq.blelogger.app.plist，
+// 面板只负责把这份文件渲染成列表。面板不持有蓝牙对象，所以面板崩了
+// 不影响抓包，反之亦然。
 //
-// 所有跨进程数据都是「SpringBoard 写 plist → 面板读 plist」，面板不持有蓝牙对象，
-// 所以面板崩了也不会影响抓包，反之亦然。
+// 1.2.1 点进来就闪退的根因是这里调了 LSApplicationWorkspace 的
+// allInstalledApplications（iOS 16 已移除）。现在不需要 App 白名单，
+// 那段代码整个不存在。
 
 #import "AxsBLELoggerRootListController.h"
 #import <Preferences/PSSpecifier.h>
@@ -20,69 +20,12 @@ static NSString *const kConfigPath   = @"/var/mobile/Library/Preferences/com.qwq
 static NSString *const kDataPath     = @"/var/mobile/Library/Preferences/com.qwq.blelogger.capture.plist";
 static NSString *const kAppDataPath  = @"/var/mobile/Library/Preferences/com.qwq.blelogger.app.plist";
 static NSString *const kPrefsChanged = @"com.qwq.blelogger.preferences-changed";
-static const NSUInteger kShowFrames  = 15;
-static const NSUInteger kShowDevices = 8;
+static const NSUInteger kShowFrames  = 20;
 static const NSUInteger kShowLatest  = 6;
 
 static NSDictionary *AXRead(NSString *path) {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:path];
     return [d isKindOfClass:[NSDictionary class]] ? d : @{};
-}
-
-// ---- 已安装的第三方 App ----
-//
-// 不用 LSApplicationWorkspace：1.2.1 就是被 allInstalledApplications 这个
-// 已经被移除的方法坑到闪退的。直接扫容器目录读 Info.plist，任何版本都成立，
-// 而且不需要私有框架。
-static NSArray *g_axsApps = nil;
-
-static NSArray *AXInstalledApps(void) {
-    if (g_axsApps) return g_axsApps;
-
-    NSMutableDictionary *byId = [NSMutableDictionary dictionary];
-    NSFileManager *fm = [NSFileManager defaultManager];
-
-    void (^scanContainer)(NSString *) = ^(NSString *root) {
-        for (NSString *uuid in [fm contentsOfDirectoryAtPath:root error:NULL]) {
-            NSString *dir = [root stringByAppendingPathComponent:uuid];
-            for (NSString *item in [fm contentsOfDirectoryAtPath:dir error:NULL]) {
-                if (![item hasSuffix:@".app"]) continue;
-                NSString *info = [[[dir stringByAppendingPathComponent:item]
-                                   stringByAppendingPathComponent:@"Info.plist"] copy];
-                NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:info];
-                NSString *bid = d[@"CFBundleIdentifier"];
-                if (![bid isKindOfClass:[NSString class]] || bid.length == 0) continue;
-                if ([bid hasPrefix:@"com.apple."]) continue;
-                NSString *name = d[@"CFBundleDisplayName"] ?: d[@"CFBundleName"] ?: bid;
-                if (![name isKindOfClass:[NSString class]] || name.length == 0) name = bid;
-                byId[bid] = name;
-            }
-        }
-    };
-
-    // App Store 装的在 UUID 容器里；越狱 App / TrollStore 装的直接放 /Applications
-    scanContainer(@"/var/containers/Bundle/Application");
-    for (NSString *item in [fm contentsOfDirectoryAtPath:@"/Applications" error:NULL]) {
-        if (![item hasSuffix:@".app"]) continue;
-        NSString *info = [@"/Applications" stringByAppendingPathComponent:
-                          [item stringByAppendingPathComponent:@"Info.plist"]];
-        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:info];
-        NSString *bid = d[@"CFBundleIdentifier"];
-        if (![bid isKindOfClass:[NSString class]] || bid.length == 0) continue;
-        if ([bid hasPrefix:@"com.apple."]) continue;
-        NSString *name = d[@"CFBundleDisplayName"] ?: d[@"CFBundleName"] ?: bid;
-        if (![name isKindOfClass:[NSString class]] || name.length == 0) name = bid;
-        byId[bid] = name;
-    }
-
-    NSMutableArray *list = [NSMutableArray array];
-    for (NSString *bid in byId) {
-        [list addObject:@{ @"bid": bid, @"name": byId[bid] }];
-    }
-    g_axsApps = [list sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
-        return [a[@"name"] localizedCaseInsensitiveCompare:b[@"name"]];
-    }];
-    return g_axsApps;
 }
 
 static NSString *AXString(id v) {
@@ -99,11 +42,22 @@ static BOOL AXWriteConfig(NSString *key, id value) {
     }
     BOOL ok = [d writeToFile:kConfigPath atomically:YES];
     if (ok) {
-        // 让已经跑起来的 SpringBoard 立刻重读配置，不用 respring
+        // 已经跑起来的 App 不会重新读配置，这个通知留给以后的运行时开关用
         CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
             (__bridge CFStringRef)kPrefsChanged, NULL, NULL, 1);
     }
     return ok;
+}
+
+// 存储层写的是紧凑 hex（FF00023200AA），给人看要断成字节
+static NSString *AXSpaceHex(NSString *hex) {
+    if (![hex isKindOfClass:[NSString class]] || hex.length == 0) return @"";
+    NSMutableString *out = [NSMutableString string];
+    for (NSUInteger i = 0; i < hex.length; i++) {
+        if (i && (i % 2) == 0) [out appendString:@" "];
+        [out appendFormat:@"%C", [hex characterAtIndex:i]];
+    }
+    return out;
 }
 
 @interface AxsBLELoggerRootListController ()
@@ -174,6 +128,16 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
     return row;
 }
 
+static PSSpecifier *AXValueRow(NSString *label, NSString *value) {
+    PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:label
+                                                     target:nil set:nil get:nil
+                                                     detail:nil
+                                                       cell:PSTitleValueCell
+                                                       edit:nil];
+    [row setProperty:value ?: @"" forKey:@"value"];
+    return row;
+}
+
 @implementation AxsBLELoggerRootListController
 
 #pragma mark - 数据
@@ -181,43 +145,32 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
 - (NSDictionary *)config { return AXRead(kConfigPath); }
 - (NSDictionary *)capture { return AXRead(kDataPath); }
 
-- (NSString *)deviceName { return AXString(self.config[@"deviceName"]) ?: @""; }
-- (NSString *)targetUUID {
-    NSString *u = AXString(self.config[@"targetUUID"]);
-    // 只显示前 8 位，完整值在复制内容里
-    if (u.length > 8) return [u substringToIndex:8];
-    return u ?: @"";
-}
-
+// 抓包数据只有注入模式这一个来源
 - (NSArray *)frames {
-    // 直连模式写 capture.plist，注入模式写 app.plist（两个进程各持一份
-    // 内存副本，写同一个文件必然互相覆盖）。这里合并后按时间排。
-    NSMutableArray *all = [NSMutableArray array];
-    NSArray *direct = AXRead(kDataPath)[@"frames"];
-    if ([direct isKindOfClass:[NSArray class]]) [all addObjectsFromArray:direct];
-    NSArray *injected = AXRead(kAppDataPath)[@"frames"];
-    if ([injected isKindOfClass:[NSArray class]]) [all addObjectsFromArray:injected];
-
-    [all sortUsingComparator:^NSComparisonResult(NSDictionary *x, NSDictionary *y) {
-        NSString *a = AXString(x[@"t"]) ?: @"";
-        NSString *b = AXString(y[@"t"]) ?: @"";
-        return [a compare:b];
-    }];
-    return all;
-}
-
-- (NSArray *)selectedApps {
-    id a = self.config[@"apps"];
-    return [a isKindOfClass:[NSArray class]] ? a : @[];
-}
-
-- (NSArray *)devices {
-    NSArray *d = self.capture[@"devices"];
-    return [d isKindOfClass:[NSArray class]] ? d : @[];
+    NSArray *f = AXRead(kAppDataPath)[@"frames"];
+    return [f isKindOfClass:[NSArray class]] ? f : @[];
 }
 
 - (NSString *)stateText {
-    return AXString(self.capture[@"state"]) ?: @"未启动";
+    NSString *s = AXString(self.capture[@"state"]);
+    return s.length ? s : @"还没有 App 上报，打开目标 App 操作一次再看";
+}
+
+// 每个特征只留最新一帧，用来一眼看出哪个值在变
+- (NSArray *)latestByCharacteristic {
+    NSMutableDictionary *latest = [NSMutableDictionary dictionary];
+    for (NSDictionary *f in self.frames) {
+        NSString *chr = AXString(f[@"chr"]) ?: @"?";
+        latest[chr] = f;
+    }
+
+    NSMutableArray *list = [NSMutableArray array];
+    for (NSString *chr in [latest allKeys]) {
+        [list addObject:latest[chr]];
+    }
+    return [list sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [(AXString(a[@"chr"]) ?: @"") compare:(AXString(b[@"chr"]) ?: @"")];
+    }];
 }
 
 #pragma mark - 生命周期
@@ -255,7 +208,6 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
 
 // 关键：PSListController 的表格数据源读的是 _specifiers 这个 ivar，
 // 不是 -specifiers 的返回值。只 return 不赋值 = 0 行 = 一片空白。
-// 1.2.1 能用就是因为里面有 `_specifiers = items;`，1.3.0 重写时漏了这句。
 - (NSMutableArray *)specifiers {
     NSMutableArray *items = nil;
     @try {
@@ -284,12 +236,12 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
 
     // ---- 概览 ----
     PSSpecifier *intro = AXGroup(@"BLE Logger");
-    [intro setProperty:@"插件在 SpringBoard 里自己当中心设备：扫描、连接、订阅全部 Notify 特征，"
-                       @"把设备推上来的帧记下来。不注入任何 App，设备没有配套 App 也能用。"
-                forKey:@"footerText"];
+    [intro setProperty:@"注入目标 App，hook CoreBluetooth 的写入和接收回调，把每一帧记下来。"
+                       @"这里只是查看器，不需要保持打开。"
+     forKey:@"footerText"];
     [items addObject:intro];
 
-    PSSpecifier *enabled = [PSSpecifier preferenceSpecifierNamed:@"启用抓包"
+    PSSpecifier *enabled = [PSSpecifier preferenceSpecifierNamed:@"启用记录"
                                                           target:self
                                                              set:@selector(setEnabled:specifier:)
                                                              get:@selector(getEnabled:)
@@ -298,185 +250,89 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
                                                             edit:nil];
     [items addObject:enabled];
 
-    PSSpecifier *status = [PSSpecifier preferenceSpecifierNamed:@"运行状态"
-                                                         target:nil set:nil get:nil detail:nil
-                                                           cell:PSTitleValueCell edit:nil];
-    [status setProperty:self.stateText forKey:@"value"];
-    [items addObject:status];
-
-    // ---- 目标设备 ----
-    NSString *name = self.deviceName;
-    NSString *uuid = self.targetUUID;
-    NSString *targetDesc = @"未选择（只扫描，不连接）";
-    if (name.length && uuid.length) {
-        targetDesc = [NSString stringWithFormat:@"%@  ·  %@…", name, uuid];
-    } else if (name.length) {
-        targetDesc = name;
-    } else if (uuid.length) {
-        targetDesc = [NSString stringWithFormat:@"%@…", uuid];
-    }
-
-    PSSpecifier *devGroup = AXGroup(@"目标设备");
-    [devGroup setProperty:[NSString stringWithFormat:@"当前：%@\n点下面的设备直接设为目标；设备没名字时也能按 UUID 认。",
-                           targetDesc]
-                   forKey:@"footerText"];
-    [items addObject:devGroup];
-
-    NSArray *devices = self.devices;
-    if (devices.count == 0) {
-        PSSpecifier *none = [PSSpecifier preferenceSpecifierNamed:@"还没扫到设备"
-                                                           target:nil set:nil get:nil detail:nil
-                                                             cell:PSTitleValueCell edit:nil];
-        [none setProperty:@"确认蓝牙已开、开关已打开" forKey:@"value"];
-        [items addObject:none];
-    } else {
-        NSUInteger shown = 0;
-        for (NSDictionary *d in devices) {
-            if (shown >= kShowDevices) break;
-            NSString *dname = AXString(d[@"name"]);
-            NSString *duuid = AXString(d[@"uuid"]);
-            if (duuid.length == 0) continue;
-
-            NSString *label = dname.length
-                ? [NSString stringWithFormat:@"%@（%@）", dname,
-                   duuid.length > 8 ? [duuid substringToIndex:8] : duuid]
-                : [NSString stringWithFormat:@"未命名（%@）",
-                   duuid.length > 8 ? [duuid substringToIndex:8] : duuid];
-
-            PSSpecifier *row = AXButtonRow(label, self, @selector(pickDevice:));
-            [row setProperty:d forKey:@"axs_device"];
-            [items addObject:row];
-            shown++;
-        }
-    }
-
-    PSSpecifier *manual = AXButtonRow(@"手动输入设备名", self, @selector(editDeviceName:));
-    [items addObject:manual];
-
-    if (name.length || uuid.length) {
-        PSSpecifier *clear = AXButtonRow(@"清除目标（只扫描）", self, @selector(clearTarget:));
-        [items addObject:clear];
-    }
-
-    // ---- 注入 App（抓 App 发出去的指令）----
-    NSArray *selected = self.selectedApps;
-    PSSpecifier *appGroup = AXGroup([NSString stringWithFormat:@"注入 App · 已选 %lu 个",
-                                     (unsigned long)selected.count]);
-    [appGroup setProperty:
-        @"这里解决的是「App 发出去的指令」——散热器、灯带这类必须靠 App 才会发命令的设备。\n"
-        @"勾上之后，把该 App 从后台划掉再打开，注入才生效。\n"
-        @"能自己连的设备走上面的「目标设备」，两条路互不影响，可以同时开。"
-                  forKey:@"footerText"];
-    [items addObject:appGroup];
-
-    NSArray *apps = AXInstalledApps();
-    if (apps.count == 0) {
-        PSSpecifier *noneApp = [PSSpecifier preferenceSpecifierNamed:@"没扫到第三方 App"
-                                                              target:nil set:nil get:nil detail:nil
-                                                                cell:PSTitleValueCell edit:nil];
-        [noneApp setProperty:@"点下面重新扫描" forKey:@"value"];
-        [items addObject:noneApp];
-    } else {
-        for (NSDictionary *a in apps) {
-            PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:a[@"name"]
-                                                              target:self
-                                                                 set:@selector(setApp:specifier:)
-                                                                 get:@selector(getApp:)
-                                                              detail:nil
-                                                                cell:PSSwitchCell
-                                                                edit:nil];
-            [row setProperty:a[@"bid"] forKey:@"axs_bid"];
-            [items addObject:row];
-        }
-    }
-
-    PSSpecifier *refreshApps = AXButtonRow(@"重新扫描 App 列表", self, @selector(refreshApps:));
-    [items addObject:refreshApps];
-
-    // ---- 最近值（按特征去重）----
+    // ---- 状态 ----
     NSArray *frames = self.frames;
-    NSMutableArray *chrOrder = [NSMutableArray array];
-    NSMutableDictionary *latest = [NSMutableDictionary dictionary];
-    for (NSInteger i = (NSInteger)frames.count - 1; i >= 0; i--) {
-        NSDictionary *f = frames[i];
-        NSString *chr = AXString(f[@"chr"]);
-        if (chr.length == 0) continue;
-        if (!latest[chr]) {
-            latest[chr] = f;
-            [chrOrder addObject:chr];       // 倒序扫，第一次遇到即最新
-        }
-    }
+    PSSpecifier *statusGroup = AXGroup(@"状态");
+    [statusGroup setProperty:(frames.count == 0
+        ? @"还没有任何帧。确认开关是开的，然后把目标 App 从后台划掉重新打开，操作一遍。"
+        : [NSString stringWithFormat:@"已记录 %lu 条。开关关掉后新开的 App 不再抓，已经注入的 App 要重启才生效。",
+           (unsigned long)frames.count])
+                     forKey:@"footerText"];
+    [items addObject:statusGroup];
 
-    if (chrOrder.count) {
+    [items addObject:AXValueRow(@"最近注入", self.stateText)];
+
+    // ---- 最近值（按特征）----
+    NSArray *latest = [self latestByCharacteristic];
+    if (latest.count) {
         PSSpecifier *latestGroup = AXGroup(@"最近值（按特征）");
-        [latestGroup setProperty:@"同一特征只留最后一帧，完整日志在下面。点按复制这一帧。"
-                          forKey:@"footerText"];
+        [latestGroup setProperty:@"每个特征只显示最后一帧，点按复制。" forKey:@"footerText"];
         [items addObject:latestGroup];
 
-        NSUInteger shown = 0;
-        for (NSString *chr in chrOrder) {
-            if (shown >= kShowLatest) break;
-            NSDictionary *f = latest[chr];
-            NSString *shortChr = chr.length > 8 ? [chr substringToIndex:8] : chr;
-            NSString *hex = AXString(f[@"hex"]) ?: @"";
-            NSString *label = [NSString stringWithFormat:@"%@  %@", shortChr, hex];
+        NSUInteger n = 0;
+        for (NSDictionary *f in latest) {
+            if (n++ >= kShowLatest) break;
+            NSString *chr = AXString(f[@"chr"]) ?: @"?";
+            NSString *short8 = chr.length > 8 ? [chr substringToIndex:8] : chr;
+            NSString *label = [NSString stringWithFormat:@"%@  %@",
+                               short8, AXSpaceHex(AXString(f[@"hex"]))];
             PSSpecifier *row = AXButtonRow(label, self, @selector(copyFrame:));
             [row setProperty:f forKey:@"axs_frame"];
             [items addObject:row];
-            shown++;
         }
     }
 
-    // ---- 日志 ----
-    PSSpecifier *frameGroup = AXGroup(
-        [NSString stringWithFormat:@"最近帧（共 %lu 条，点按复制）", (unsigned long)frames.count]);
-    [frameGroup setProperty:@"时间 + 方向 + HEX。设备推上来的帧方向是「收」。"
-                    forKey:@"footerText"];
-    [items addObject:frameGroup];
+    // ---- 最近帧 ----
+    if (frames.count) {
+        PSSpecifier *frameGroup = AXGroup(
+            [NSString stringWithFormat:@"最近帧（共 %lu 条，点按复制）",
+             (unsigned long)frames.count]);
+        [items addObject:frameGroup];
 
-    if (frames.count == 0) {
-        PSSpecifier *empty = [PSSpecifier preferenceSpecifierNamed:@"还没有帧"
-                                                            target:nil set:nil get:nil detail:nil
-                                                              cell:PSTitleValueCell edit:nil];
-        [empty setProperty:@"连上之后按一下设备上的按钮" forKey:@"value"];
-        [items addObject:empty];
-    } else {
         NSUInteger start = frames.count > kShowFrames ? frames.count - kShowFrames : 0;
-        for (NSUInteger i = frames.count; i > start; i--) {
-            NSDictionary *f = frames[i - 1];
-            NSString *label = [NSString stringWithFormat:@"%@ %@  %@",
-                               AXString(f[@"t"]) ?: @"", AXString(f[@"dir"]) ?: @"",
-                               AXString(f[@"hex"]) ?: @""];
-            PSSpecifier *row = AXButtonRow(label, self, @selector(copyFrame:));
+        for (NSUInteger i = start; i < frames.count; i++) {
+            NSDictionary *f = frames[i];
+            if (![f isKindOfClass:[NSDictionary class]]) continue;
+
+            NSString *t   = AXString(f[@"t"]) ?: @"--:--:--";
+            NSString *dir = AXString(f[@"dir"]) ?: @"?";
+            NSString *chr = AXString(f[@"chr"]) ?: @"?";
+            NSString *short8 = chr.length > 8 ? [chr substringToIndex:8] : chr;
+
+            PSSpecifier *row = AXButtonRow(
+                [NSString stringWithFormat:@"%@ %@ %@  %@",
+                 t, dir, short8, AXSpaceHex(AXString(f[@"hex"]))],
+                self, @selector(copyFrame:));
             [row setProperty:f forKey:@"axs_frame"];
             [items addObject:row];
         }
     }
 
+    // ---- 操作 ----
     PSSpecifier *actions = AXGroup(@"");
     [items addObject:actions];
 
-    PSSpecifier *copyAll = AXButtonRow(@"复制全部日志", self, @selector(copyAll:));
-    [items addObject:copyAll];
-
-    PSSpecifier *clear = AXButtonRow(@"清空日志", self, @selector(clearFrames:));
-    [items addObject:clear];
+    if (frames.count) {
+        [items addObject:AXButtonRow(@"复制全部日志", self, @selector(copyAll:))];
+    }
+    [items addObject:AXButtonRow(@"清空日志", self, @selector(clearFrames:))];
 
     return items;
 }
 
 #pragma mark - 开关
 
+// 配置里没写这个键就是刚装好，默认开
 - (id)getEnabled:(PSSpecifier *)specifier {
     id v = self.config[@"enabled"];
-    return [v isKindOfClass:[NSNumber class]] ? v : @NO;
+    return v ? @([v boolValue]) : @YES;
 }
 
 - (void)setEnabled:(id)value specifier:(PSSpecifier *)specifier {
     AXWriteConfig(@"enabled", @([value boolValue]));
-    // SpringBoard 那边 1 秒左右才会写回新状态，稍后再刷一次列表
+
     __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         [weakSelf specifiers];
         [weakSelf reloadSpecifiers];
@@ -503,79 +359,22 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
     }
 }
 
-#pragma mark - 选设备
-
-- (void)pickDevice:(PSSpecifier *)specifier {
-    NSDictionary *d = [specifier propertyForKey:@"axs_device"];
-    if (![d isKindOfClass:[NSDictionary class]]) return;
-
-    NSString *uuid = AXString(d[@"uuid"]);
-    NSString *name = AXString(d[@"name"]);
-    if (uuid.length == 0) return;
-
-    AXWriteConfig(@"targetUUID", uuid);
-    AXWriteConfig(@"deviceName", name.length ? name : nil);
-    if (!AXString(self.config[@"enabled"])) {
-        AXWriteConfig(@"enabled", @YES);        // 选了设备顺手把开关打开
-    }
-    [self reloadSpecifiers];
-
-    UIAlertController *toast = [UIAlertController alertControllerWithTitle:nil
-                                                                   message:@"已设为目标，正在连接"
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [self presentViewController:toast animated:YES completion:^{
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [toast dismissViewControllerAnimated:YES completion:nil];
-        });
-    }];
-}
-
-- (void)editDeviceName:(PSSpecifier *)specifier {
-    UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:@"目标设备名"
-                         message:@"填广播里的名字，支持部分匹配（填 iKF 就能匹配 iKF-Air Clip-APP）。留空 = 只扫描不连接。"
-                  preferredStyle:UIAlertControllerStyleAlert];
-
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
-        tf.text = self.deviceName;
-        tf.placeholder = @"例如 iKF-Air Clip-APP";
-        tf.clearButtonMode = UITextFieldViewModeWhileEditing;
-    }];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *action) {
-        UITextField *field = (UITextField *)alert.textFields.firstObject;
-        NSString *name = field.text ?: @"";
-        name = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-        AXWriteConfig(@"deviceName", name.length ? name : nil);
-        AXWriteConfig(@"targetUUID", nil);      // 手输了名字就按名字匹配
-        [weakSelf reloadSpecifiers];
-    }]];
-
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)clearTarget:(PSSpecifier *)specifier {
-    AXWriteConfig(@"deviceName", nil);
-    AXWriteConfig(@"targetUUID", nil);
-    [self reloadSpecifiers];
-}
-
 #pragma mark - 复制 / 清空
 
 - (void)toast:(NSString *)text {
-    UIAlertController *toast = [UIAlertController alertControllerWithTitle:nil
-                                                                   message:text
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [self presentViewController:toast animated:YES completion:^{
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [toast dismissViewControllerAnimated:YES completion:nil];
-        });
-    }];
+    Class hud = NSClassFromString(@"UIAlertController");
+    if (!hud) return;
+    id alert = ((id (*)(id, SEL, id, id, id))objc_msgSend)(hud,
+        @selector(alertControllerWithTitle:message:preferredStyle:),
+        nil, text, (id)0);
+    if (!alert) return;
+
+    id action = ((id (*)(id, SEL, id, id, id))objc_msgSend)(NSClassFromString(@"UIAlertAction"),
+        @selector(actionWithTitle:style:handler:), @"好", (id)0, nil);
+    if (action) {
+        ((void (*)(id, SEL, id))objc_msgSend)(alert, @selector(addAction:), action);
+    }
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)copyFrame:(PSSpecifier *)specifier {
@@ -583,71 +382,42 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
     if (![f isKindOfClass:[NSDictionary class]]) return;
 
     NSString *text = [NSString stringWithFormat:@"%@ %@ %@ %@",
-                      AXString(f[@"t"]) ?: @"", AXString(f[@"dir"]) ?: @"",
-                      AXString(f[@"chr"]) ?: @"", AXString(f[@"hex"]) ?: @""];
+                      AXString(f[@"t"]) ?: @"",
+                      AXString(f[@"dir"]) ?: @"",
+                      AXString(f[@"chr"]) ?: @"?",
+                      AXSpaceHex(AXString(f[@"hex"]))];
+
     [UIPasteboard generalPasteboard].string = text;
-    [self toast:@"已复制"];
+    [self toast:@"已复制这一条"];
 }
 
 - (void)copyAll:(PSSpecifier *)specifier {
     NSArray *frames = self.frames;
-    NSMutableString *out = [NSMutableString string];
-    for (NSDictionary *f in frames) {
-        [out appendFormat:@"%@ %@ %@ %@\n",
-            AXString(f[@"t"]) ?: @"", AXString(f[@"dir"]) ?: @"",
-            AXString(f[@"chr"]) ?: @"", AXString(f[@"hex"]) ?: @""];
-    }
-    if (out.length == 0) [out appendString:@"（空）"];
-    [UIPasteboard generalPasteboard].string = out;
+    if (frames.count == 0) return;
 
-    UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:@"已复制"
-                         message:[NSString stringWithFormat:@"%lu 条", (unsigned long)frames.count]
-                  preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+    NSMutableString *out = [NSMutableString string];
+    [out appendFormat:@"# BLE Logger %lu 条\n", (unsigned long)frames.count];
+    for (NSDictionary *f in frames) {
+        if (![f isKindOfClass:[NSDictionary class]]) continue;
+        [out appendFormat:@"%@ %@ %@ %@\n",
+            AXString(f[@"t"]) ?: @"",
+            AXString(f[@"dir"]) ?: @"",
+            AXString(f[@"chr"]) ?: @"?",
+            AXSpaceHex(AXString(f[@"hex"]))];
+    }
+
+    [UIPasteboard generalPasteboard].string = out;
+    [self toast:[NSString stringWithFormat:@"已复制 %lu 条", (unsigned long)frames.count]];
 }
 
 - (void)clearFrames:(PSSpecifier *)specifier {
-    NSMutableDictionary *d = [AXRead(kDataPath) mutableCopy];
-    if (!d) d = [NSMutableDictionary dictionary];
-    d[@"frames"] = @[];
-    [d writeToFile:kDataPath atomically:YES];
-
-    // 注入模式那份也要清，否则用户点了「清空」还剩一半
-    NSMutableDictionary *a = [AXRead(kAppDataPath) mutableCopy];
-    if (!a) a = [NSMutableDictionary dictionary];
-    a[@"frames"] = @[];
-    [a writeToFile:kAppDataPath atomically:YES];
+    [@{} writeToFile:kAppDataPath atomically:YES];
+    [@{} writeToFile:kDataPath atomically:YES];
 
     self.lastCount = 0;
+    [self specifiers];
     [self reloadSpecifiers];
-}
-
-#pragma mark - 注入 App 白名单
-
-- (id)getApp:(PSSpecifier *)specifier {
-    NSString *bid = AXString([specifier propertyForKey:@"axs_bid"]);
-    if (bid.length == 0) return @NO;
-    return [self.selectedApps containsObject:bid] ? @YES : @NO;
-}
-
-- (void)setApp:(id)value specifier:(PSSpecifier *)specifier {
-    NSString *bid = AXString([specifier propertyForKey:@"axs_bid"]);
-    if (bid.length == 0) return;
-
-    NSMutableArray *cur = [self.selectedApps mutableCopy];
-    if ([value boolValue]) {
-        if (![cur containsObject:bid]) [cur addObject:bid];
-    } else {
-        [cur removeObject:bid];
-    }
-    AXWriteConfig(@"apps", cur);
-}
-
-- (void)refreshApps:(PSSpecifier *)specifier {
-    g_axsApps = nil;          // 丢掉缓存，下次 -specifiers 重扫
-    [self reloadSpecifiers];
+    [self toast:@"已清空"];
 }
 
 @end

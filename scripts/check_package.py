@@ -166,9 +166,13 @@ def main(deb):
     assert b"AxsBLELoggerRootListController" in prefs_bin, "面板二进制里没有入口类"
 
     dylib = open(dylib_path, "rb").read()
-    assert b"deviceName" in dylib, "抓包库没有读目标设备名"
-    assert b"com.apple.springboard" in dylib, "抓包库没有限定 SpringBoard"
-    assert b"capture.plist" in dylib, "抓包库没有抓包落盘路径"
+    assert b"writeValue:forCharacteristic:type:" in dylib, "抓包库没 hook 写入方向"
+    assert b"didUpdateValueForCharacteristic" in dylib, "抓包库没 hook 接收方向"
+    assert b"com.apple." in dylib, "抓包库没跳过系统进程"
+    assert b"app.plist" in dylib, "抓包库没有抓包落盘路径"
+
+    # 面板必须写回父类的 _specifiers，否则表格 0 行（1.3.0 的空白 bug）
+    assert b"_specifiers" in prefs_bin, "面板没有引用 PSListController 的 _specifiers，界面会空白"
 
     print("OK", deb)
 
