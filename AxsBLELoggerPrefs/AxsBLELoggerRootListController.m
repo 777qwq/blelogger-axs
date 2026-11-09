@@ -134,6 +134,13 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
 
 - (NSDictionary *)config { return AXRead(kConfigPath); }
 - (NSDictionary *)capture { return AXRead(kDataPath); }
+- (NSDictionary *)appData { return AXRead(kAppDataPath); }
+
+// 被注入过的 App 列表 —— 判断故障出在"没注入"还是"注入了没抓到"靠这个
+- (NSArray *)injected {
+    NSArray *a = self.appData[@"injected"];
+    return [a isKindOfClass:[NSArray class]] ? a : @[];
+}
 
 // 抓包数据只有注入模式这一个来源
 - (NSArray *)frames {
@@ -248,6 +255,31 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
     PSSpecifier *statusGroup = AXGroup(@"状态");
     [statusGroup setProperty:state forKey:@"footerText"];
     [items addObject:statusGroup];
+
+    // ---- 已注入的 App（诊断）----
+    // 空白面板最常见的原因不是抓不到，是 hook 压根没进目标 App。
+    // 这个列表为空 = 注入没成功；有目标 App = 注入了但没抓到 BLE 调用。
+    NSArray *injected = [self injected];
+    PSSpecifier *injectGroup = AXGroup(
+        [NSString stringWithFormat:@"已注入的 App（%lu）", (unsigned long)injected.count]);
+
+    NSMutableString *injectText = [NSMutableString string];
+    if (injected.count == 0) {
+        [injectText appendString:
+            @"一个都没有。说明 hook 没进任何 App：开关刚打开的需要把 App 划掉重开；"
+            @"RootHide 用户还要把这个 App 加进注入白名单。"];
+    } else {
+        for (NSDictionary *e in injected) {
+            if (![e isKindOfClass:[NSDictionary class]]) continue;
+            [injectText appendFormat:@"%@  %@\n", AXString(e[@"t"]) ?: @"", AXString(e[@"bid"]) ?: @"?"];
+        }
+        NSUInteger n = self.appData.count;
+        if (n == 0) {
+            [injectText appendString:@"数据文件读不到：写入被沙盒挡住了。"];
+        }
+    }
+    [injectGroup setProperty:injectText forKey:@"footerText"];
+    [items addObject:injectGroup];
 
     // ---- 最近值（按特征）----
     NSArray *latest = [self latestByCharacteristic];

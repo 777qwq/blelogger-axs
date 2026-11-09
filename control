@@ -1,6 +1,6 @@
 Package: com.qwq.blelogger
 Name: BLE Logger
-Version: 1.4.0
+Version: 1.4.1
 Architecture: iphoneos-arm64
 Description: BLE 指令记录器：注入 App 抓收发，帧显示在设置面板
  注入目标 App，hook CoreBluetooth 的写入和接收回调，把 App 发出的每个

@@ -10,6 +10,7 @@
 #import "AxsBLELoggerStore.h"
 #import <CoreFoundation/CoreFoundation.h>
 #import <dispatch/dispatch.h>
+extern char *getenv(const char *name);
 
 static NSString *const kConfigPath = @"/var/mobile/Library/Preferences/com.qwq.blelogger.plist";
 static NSString *const kDataPath   = @"/var/mobile/Library/Preferences/com.qwq.blelogger.capture.plist";
@@ -158,13 +159,77 @@ void AxsBLELoggerClearFrames(void) {
 
 static NSString *const kAppDataPath = @"/var/mobile/Library/Preferences/com.qwq.blelogger.app.plist";
 
+// 注入的代码跑在第三方 App 里，那些进程是有沙盒的：写
+// /var/mobile/Library/Preferences 可能直接失败（PWProbe 里那个
+// NSTemporaryDirectory 兜底就是为这个写的）。失败时退到自己容器的
+// Documents —— 面板读不到，但数据不丢，也能从"全局文件不存在"反推原因。
+static NSString *g_appPath = nil;
+static BOOL g_appPathProbed = NO;
+
+static NSMutableDictionary *axs_app_read_data(void);
+
+NSString *AxsBLELoggerAppDataPath(void) {
+    if (g_appPathProbed) return g_appPath ?: kAppDataPath;
+    g_appPathProbed = YES;
+
+    NSDictionary *probe = @{ @"t": @1 };
+    NSString *probePath = @"/var/mobile/Library/Preferences/.blelogger.probe";
+    if ([probe writeToFile:probePath atomically:YES]) {
+        [[NSFileManager defaultManager] removeItemAtPath:probePath error:NULL];
+        g_appPath = kAppDataPath;
+        return g_appPath;
+    }
+
+    const char *home = getenv("HOME");
+    if (home) {
+        NSString *docs = [[NSString stringWithUTF8String:home] stringByAppendingPathComponent:@"Documents"];
+        NSString *probe2 = [docs stringByAppendingPathComponent:@".blelogger.probe"];
+        if ([probe writeToFile:probe2 atomically:YES]) {
+            [[NSFileManager defaultManager] removeItemAtPath:probe2 error:NULL];
+            g_appPath = [docs stringByAppendingPathComponent:@"com.qwq.blelogger.app.plist"];
+            return g_appPath;
+        }
+    }
+
+    g_appPath = kAppDataPath;
+    return g_appPath;
+}
+
+// 诊断：哪些 App 被注入过。面板读这个列表就知道 hook 到底有没有进目标进程。
+void AxsBLELoggerNoteInjected(NSString *bid) {
+    if (bid.length == 0) return;
+    axs_store_init();
+
+    @synchronized (g_lock) {
+        NSMutableDictionary *data = axs_app_read_data();
+        NSArray *old = data[@"injected"];
+        NSMutableArray *list = [old isKindOfClass:[NSArray class]] ? [old mutableCopy] : [NSMutableArray array];
+
+        NSDateFormatter *df = [[NSDateFormatter alloc] init];
+        df.dateFormat = @"HH:mm:ss";
+
+        BOOL seen = NO;
+        for (NSDictionary *e in list) {
+            if ([e isKindOfClass:[NSDictionary class]] && [e[@"bid"] isEqualToString:bid]) { seen = YES; break; }
+        }
+        if (!seen) {
+            [list addObject:@{ @"bid": bid, @"t": [df stringFromDate:[NSDate date]] }];
+            while (list.count > 20) [list removeObjectAtIndex:0];
+        }
+
+        data[@"injected"] = list;
+        data[@"path"] = AxsBLELoggerAppDataPath();
+        [data writeToFile:AxsBLELoggerAppDataPath() atomically:YES];
+    }
+}
+
 static NSMutableArray *g_appFrames = nil;
 static BOOL g_appLoaded = NO;
 static BOOL g_appDirty = NO;
 static BOOL g_appFlushing = NO;
 
 static NSMutableDictionary *axs_app_read_data(void) {
-    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kAppDataPath];
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:AxsBLELoggerAppDataPath()];
     return [d isKindOfClass:[NSDictionary class]] ? [d mutableCopy] : [NSMutableDictionary dictionary];
 }
 
@@ -215,7 +280,7 @@ static void axs_app_schedule_flush(void) {
         while (merged.count > kMaxFrames) [merged removeObjectAtIndex:0];
 
         data[@"frames"] = merged;
-        [data writeToFile:kAppDataPath atomically:YES];
+        [data writeToFile:AxsBLELoggerAppDataPath() atomically:YES];
     });
 }
 

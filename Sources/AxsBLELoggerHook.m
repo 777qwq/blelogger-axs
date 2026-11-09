@@ -28,9 +28,15 @@ static IMP   g_imp[AXS_MAX_DELEGATE_CLASSES];
 static int   g_clsCount = 0;
 static BOOL  g_installed = NO;
 
+// 总开关只控制"记不记"，不控制"装不装"。
+// 关掉开关也必须把 hook 装上并上报一次，否则面板分不清
+// 「没注入」和「注入了但没抓到」—— 这两种故障的处理方式完全不同。
+static BOOL  g_recordEnabled = YES;
+
 #pragma mark - 记录
 
 static void AxsRecordWrite(NSData *data, CBCharacteristic *ch, CBCharacteristicWriteType type) {
+    if (!g_recordEnabled) return;
     if (!data.length || !ch) return;
     AxsBLELoggerAppendAppFrame(
         (type == CBCharacteristicWriteWithResponse) ? @"发(应答)" : @"发",
@@ -40,6 +46,7 @@ static void AxsRecordWrite(NSData *data, CBCharacteristic *ch, CBCharacteristicW
 }
 
 static void AxsRecordNotify(CBCharacteristic *ch) {
+    if (!g_recordEnabled) return;
     NSData *v = ch.value;
     if (!v.length) return;
     AxsBLELoggerAppendAppFrame(
@@ -138,9 +145,9 @@ void AxsBLELoggerHookStart(void) {
         // backboardd 这些进程只会拖慢系统，也没有要抓的东西。
         if ([bid hasPrefix:@"com.apple."]) return;
 
-        // 总开关。配置里没写这个键（刚装好）时默认开，装完直接能用。
+        // 配置里没写 enabled 这个键（刚装好）时默认记录
         id enabled = AxsBLELoggerReadConfig()[@"enabled"];
-        if (enabled && ![enabled boolValue]) return;
+        g_recordEnabled = enabled ? [enabled boolValue] : YES;
 
         if (!NSClassFromString(@"CBPeripheral")) {
             dlopen("/System/Library/Frameworks/CoreBluetooth.framework/CoreBluetooth", RTLD_NOW);
@@ -149,5 +156,6 @@ void AxsBLELoggerHookStart(void) {
 
         AxsHookInstall();
         AxsBLELoggerSetState([NSString stringWithFormat:@"已注入 %@", bid]);
+        AxsBLELoggerNoteInjected(bid);
     }
 }

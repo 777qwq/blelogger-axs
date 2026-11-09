@@ -6,7 +6,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-VER=${VER:-1.4.0}
+VER=${VER:-1.4.1}
 BIN_DIR=${BIN_DIR:-/tmp/axsbuild}
 DEB="com.qwq.blelogger_${VER}_iphoneos-arm64.deb"
 
