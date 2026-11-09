@@ -1,0 +1,21 @@
+name: probe-macos
+
+on:
+  push:
+    paths:
+      - ".github/workflows/probe.yml"
+  workflow_dispatch:
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-13, macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - run: |
+          sw_vers
+          xcodebuild -version || true
+          xcrun --sdk iphoneos --show-sdk-path || true
