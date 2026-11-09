@@ -36,10 +36,95 @@ def macho_archs(path):
     return [(cputype, cpusubtype & 0x00FFFFFF)]
 
 
+def macho_slices(path):
+    """返回 [(cputype, cpusubtype, offset, size)]。"""
+    data = open(path, "rb").read()
+    magic_be = struct.unpack(">I", data[:4])[0]
+    out = []
+    if magic_be in (0xCAFEBABE, 0xCAFEBABF):
+        count = struct.unpack(">I", data[4:8])[0]
+        wide = magic_be == 0xCAFEBABF
+        step = 32 if wide else 20
+        for i in range(count):
+            base = 8 + i * step
+            cputype, cpusubtype = struct.unpack(">ii", data[base:base + 8])
+            if wide:
+                offset, size = struct.unpack(">QQ", data[base + 8:base + 24])
+            else:
+                offset, size = struct.unpack(">II", data[base + 8:base + 16])
+            out.append((cputype, cpusubtype & 0x00FFFFFF, offset, size))
+        return out
+
+    cputype, cpusubtype = struct.unpack("<ii", data[4:12])
+    return [(cputype, cpusubtype & 0x00FFFFFF, 0, len(data))]
+
+
+def slice_segments(path, subtype):
+    """取指定 subtype 切片里的所有段名。"""
+    data = open(path, "rb").read()
+    for cpu, sub, offset, size in macho_slices(path):
+        if cpu != ARM64 or sub != subtype:
+            continue
+        slice_data = data[offset:offset + size]
+        ncmds = struct.unpack_from("<I", slice_data, 16)[0]
+        off = 32
+        names = []
+        for _ in range(ncmds):
+            cmd, cmdsize = struct.unpack_from("<II", slice_data, off)
+            if cmd == 0x19:  # LC_SEGMENT_64
+                names.append(slice_data[off + 8:off + 24].rstrip(b"\0").decode("utf-8", "replace"))
+            off += cmdsize
+        return names
+    return []
+
+
+def chain_pointer_formats(path, subtype):
+    """返回指定切片里 chained fixups 用到的 pointer_format 集合。
+
+    1 = DYLD_CHAINED_PTR_ARM64E，7 = ..._KERNEL，9 = ..._USERLAND，
+    12 = ..._USERLAND24。这几个才带 ptrauth 的 auth 位。
+    2/6 是普通 64 位指针，arm64e 进程里加载 objc 类会认签失败。
+    """
+    data = open(path, "rb").read()
+    for cpu, sub, offset, size in macho_slices(path):
+        if cpu != ARM64 or sub != subtype:
+            continue
+        s = data[offset:offset + size]
+        ncmds = struct.unpack_from("<I", s, 16)[0]
+        off = 32
+        for _ in range(ncmds):
+            cmd, cmdsize = struct.unpack_from("<II", s, off)
+            if cmd == 0x80000034:  # LC_DYLD_CHAINED_FIXUPS
+                dataoff = struct.unpack_from("<I", s, off + 8)[0]
+                starts = dataoff + struct.unpack_from("<I", s, dataoff + 4)[0]
+                segc = struct.unpack_from("<I", s, starts)[0]
+                fmts = set()
+                for j in range(segc):
+                    segoff = struct.unpack_from("<I", s, starts + 4 + 4 * j)[0]
+                    if segoff == 0:
+                        continue
+                    ss = starts + segoff
+                    _, _, pfmt = struct.unpack_from("<IHH", s, ss)
+                    fmts.add(pfmt)
+                return fmts
+            off += cmdsize
+    return set()
+
+
+ARM64E_PTR_FORMATS = {1, 7, 9, 12}
+
+
 def assert_arm64e(path, label):
-    archs = macho_archs(path)
+    archs = [(c, s) for c, s, _, _ in macho_slices(path)]
     assert (ARM64, ARM64E_SUBTYPE) in archs, \
         label + " 缺 arm64e 切片，arm64e 设备上加载会失败：" + repr(archs)
+
+    # 光有架构标签不够，但判断依据不是段名 —— 现代 ld64 会把签名指针
+    # 直接放 __DATA_CONST，不一定单独开 __AUTH 段。真正要验的是
+    # chained fixups 的 pointer_format 是不是 arm64e 那几种（带 auth 位）。
+    fmts = chain_pointer_formats(path, ARM64E_SUBTYPE)
+    assert fmts & ARM64E_PTR_FORMATS, \
+        label + " 的 arm64e 切片指针格式不是 arm64e（未签名），加载会崩：" + repr(fmts)
     return archs
 
 REQUIRED = [
@@ -47,7 +132,6 @@ REQUIRED = [
     "Library/MobileSubstrate/DynamicLibraries/AxsBLELogger.plist",
     "Library/PreferenceBundles/AxsBLELoggerPrefs.bundle/AxsBLELoggerPrefs",
     "Library/PreferenceBundles/AxsBLELoggerPrefs.bundle/Info.plist",
-    "Library/PreferenceBundles/AxsBLELoggerPrefs.bundle/AxsBLELoggerRoot.plist",
     "Library/PreferenceBundles/AxsBLELoggerPrefs.bundle/icon.png",
     "Library/PreferenceLoader/Preferences/AxsBLELoggerPrefs.plist",
 ]
@@ -82,8 +166,9 @@ def main(deb):
     assert b"AxsBLELoggerRootListController" in prefs_bin, "面板二进制里没有入口类"
 
     dylib = open(dylib_path, "rb").read()
-    assert b"com.qwq.blelogger.plist" in dylib, "抓包库没有读配置"
-    assert b"selected" in dylib, "抓包库没有白名单逻辑"
+    assert b"deviceName" in dylib, "抓包库没有读目标设备名"
+    assert b"com.apple.springboard" in dylib, "抓包库没有限定 SpringBoard"
+    assert b"capture.plist" in dylib, "抓包库没有抓包落盘路径"
 
     print("OK", deb)
 

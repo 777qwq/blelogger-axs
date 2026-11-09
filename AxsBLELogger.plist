@@ -2,11 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- 空 Filter = 注入所有进程，由面板白名单在构造函数里做软过滤。
-         Settings 以 mobile 身份运行，写不进 /var/jb 下的这份 plist，
-         所以不用 Bundles 硬过滤来切换目标 App。 -->
+    <!-- 只注入 SpringBoard：插件自己当 BLE Central 去连设备，
+         不需要出现在任何 App 进程里。空 Filter 会拖慢所有 App 启动。 -->
     <key>Filter</key>
     <dict>
+        <key>Bundles</key>
+        <array>
+            <string>com.apple.springboard</string>
+        </array>
     </dict>
 </dict>
 </plist>

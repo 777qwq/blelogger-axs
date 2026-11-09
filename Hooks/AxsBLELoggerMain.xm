@@ -1,10 +1,10 @@
 #import <UIKit/UIKit.h>
-#import "AxsBLELoggerPrivate.h"
+#import "AxsBLELoggerScanner.h"
 
-// 本插件不 hook 固定类，入口是一个构造函数：
-// AxsBLELoggerStart() 内部判断 bundle、读面板白名单，再装 CoreBluetooth 的 hook。
+// 不再 hook 任何类。入口只做一件事：在 SpringBoard 里把 BLE 扫描器拉起来。
+// 注入范围由 layout/.../AxsBLELogger.plist 的 Filter 限定为 com.apple.springboard。
 %ctor {
     @autoreleasepool {
-        AxsBLELoggerStart();
+        AxsBLELoggerScannerStart();
     }
 }

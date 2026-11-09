@@ -5,7 +5,7 @@
 set -e
 cd "$(dirname "$0")"
 
-VER=${VER:-1.2.1}
+VER=${VER:-1.3.0}
 TARGET_DYLIB=AxsBLELogger
 BIN_DIR=${BIN_DIR:-/tmp/axsbuild}
 

@@ -2,6 +2,7 @@
 #include <objc/objc.h>
 #include <objc/runtime.h>
 #include <objc/message.h>
+#include <dispatch/dispatch.h>
 
 typedef struct _NSRange { NSUInteger location; NSUInteger length; } NSRange;
 static inline NSRange NSMakeRange(NSUInteger l, NSUInteger n) {
@@ -71,6 +72,9 @@ enum { NSOrderedAscending = -1, NSOrderedSame = 0, NSOrderedDescending = 1 };
 - (NSString *)lowercaseString;
 - (NSString *)stringByReplacingOccurrencesOfString:(NSString *)a withString:(NSString *)b;
 - (NSComparisonResult)compare:(NSString *)s;
+- (NSComparisonResult)caseInsensitiveCompare:(NSString *)s;
+- (BOOL)localizedCaseInsensitiveContainsString:(NSString *)s;
+- (NSString *)stringByTrimmingCharactersInSet:(id)set;
 - (NSString *)lastPathComponent;
 - (NSString *)stringByDeletingPathExtension;
 - (NSString *)stringByAppendingPathComponent:(NSString *)c;
@@ -95,6 +99,7 @@ enum { NSOrderedAscending = -1, NSOrderedSame = 0, NSOrderedDescending = 1 };
 @interface NSArray : NSObject
 + (instancetype)array;
 + (instancetype)arrayWithObjects:(id)first, ...;
++ (instancetype)arrayWithObjects:(const id *)objects count:(NSUInteger)cnt;
 - (NSUInteger)count;
 - (id)objectAtIndex:(NSUInteger)i;
 - (id)firstObject;
@@ -120,10 +125,14 @@ enum { NSOrderedAscending = -1, NSOrderedSame = 0, NSOrderedDescending = 1 };
 - (void)removeObject:(id)o;
 - (void)removeAllObjects;
 - (void)removeObjectAtIndex:(NSUInteger)i;
+- (void)removeLastObject;
+- (void)insertObject:(id)o atIndex:(NSUInteger)i;
 @end
 
 @interface NSDictionary : NSObject
 + (instancetype)dictionaryWithObjects:(NSArray *)objs forKeys:(NSArray *)keys;
++ (instancetype)dictionaryWithObjects:(const id *)objects forKeys:(const id *)keys count:(NSUInteger)cnt;
++ (instancetype)dictionaryWithObjectsAndKeys:(id)first, ...;
 + (id)dictionaryWithContentsOfFile:(NSString *)path;
 - (id)objectForKey:(id)k;
 - (id)objectForKeyedSubscript:(id)k;
@@ -142,6 +151,21 @@ enum { NSOrderedAscending = -1, NSOrderedSame = 0, NSOrderedDescending = 1 };
 - (void)removeAllObjects;
 @end
 
+@interface NSLock : NSObject
+- (void)lock;
+- (void)unlock;
+- (BOOL)tryLock;
+@end
+
+@interface NSCharacterSet : NSObject
++ (NSCharacterSet *)whitespaceCharacterSet;
+@end
+
+@interface NSIndexPath : NSObject
+@property (readonly) NSInteger row;
+@property (readonly) NSInteger section;
+@end
+
 @interface NSUUID : NSObject
 - (NSString *)UUIDString;
 @end
@@ -154,6 +178,15 @@ enum { NSOrderedAscending = -1, NSOrderedSame = 0, NSOrderedDescending = 1 };
 - (instancetype)init;
 - (void)setDateFormat:(NSString *)f;
 - (NSString *)stringFromDate:(NSDate *)d;
+@end
+
+@interface NSTimer : NSObject
++ (NSTimer *)scheduledTimerWithTimeInterval:(NSTimeInterval)ti
+                                     target:(id)t
+                                   selector:(SEL)s
+                                   userInfo:(id)ui
+                                    repeats:(BOOL)rep;
+- (void)invalidate;
 @end
 
 @interface NSFileManager : NSObject

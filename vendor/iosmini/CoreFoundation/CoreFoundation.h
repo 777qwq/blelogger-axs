@@ -2,6 +2,11 @@
 #include <objc/objc.h>
 
 typedef const struct __CFString *CFStringRef;
+
+#ifdef __OBJC__
+extern CFStringRef __CFStringMakeConstantString(const char *c);
+#define CFSTR(s) __CFStringMakeConstantString(s)
+#endif
 typedef const struct __CFDictionary *CFDictionaryRef;
 typedef const struct __CFNotificationCenter *CFNotificationCenterRef;
 

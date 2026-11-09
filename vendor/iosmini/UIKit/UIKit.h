@@ -29,7 +29,7 @@ enum { NSTextAlignmentLeft = 0, NSTextAlignmentCenter = 1, NSTextAlignmentRight 
 typedef NSInteger NSLineBreakMode;
 enum { NSLineBreakByWordWrapping = 0, NSLineBreakByTruncatingTail = 4 };
 
-@class CALayer, UIColor, UIFont, UIImage, UIViewController;
+@class CALayer, UIColor, UIFont, UIImage, UIViewController, UIWindow, UINavigationController;
 
 @interface CALayer : NSObject
 @property CGFloat cornerRadius;
@@ -75,6 +75,7 @@ enum { NSLineBreakByWordWrapping = 0, NSLineBreakByTruncatingTail = 4 };
 - (void)bringSubviewToFront:(UIView *)v;
 - (UIView *)viewWithTag:(NSInteger)t;
 - (UIView *)superview;
+- (UIWindow *)window;
 - (UIView *)hitTest:(CGPoint)p withEvent:(id)e;
 - (void)setNeedsLayout;
 - (void)layoutIfNeeded;
@@ -92,9 +93,24 @@ enum { NSLineBreakByWordWrapping = 0, NSLineBreakByTruncatingTail = 4 };
 @property (readonly) CGFloat scale;
 @end
 
+typedef NSInteger UITextFieldViewMode;
+enum { UITextFieldViewModeNever = 0, UITextFieldViewModeWhileEditing = 1 };
+
+@class UITextField;
+
+@interface UITextField : UIView
+@property (copy) NSString *text;
+@property (copy) NSString *placeholder;
+@property UITextFieldViewMode clearButtonMode;
+@end
+
 @interface UIViewController : UIResponder
 @property (strong) UIView *view;
+@property (readonly) UIView *window;
 - (void)presentViewController:(UIViewController *)vc animated:(BOOL)flag completion:(void (^)(void))completion;
+- (void)dismissViewControllerAnimated:(BOOL)flag completion:(void (^)(void))completion;
+- (BOOL)isViewLoaded;
+@property (readonly) UINavigationController *navigationController;
 @end
 
 typedef NSInteger UIAlertControllerStyle;
@@ -113,6 +129,8 @@ enum { UIAlertActionStyleDefault = 0, UIAlertActionStyleCancel = 1, UIAlertActio
                                  message:(NSString *)message
                           preferredStyle:(UIAlertControllerStyle)style;
 - (void)addAction:(UIAlertAction *)action;
+- (void)addTextFieldWithConfigurationHandler:(void (^)(UITextField *tf))handler;
+@property (readonly) NSArray *textFields;
 @end
 
 @interface UILabel : UIView
@@ -136,6 +154,10 @@ enum { UIAlertActionStyleDefault = 0, UIAlertActionStyleCancel = 1, UIAlertActio
 @property CGSize contentSize;
 @property BOOL showsVerticalScrollIndicator;
 @property BOOL alwaysBounceVertical;
+@end
+
+@interface UITableView : UIScrollView
+- (void)deselectRowAtIndexPath:(NSIndexPath *)ip animated:(BOOL)a;
 @end
 
 @interface UIPasteboard : NSObject
@@ -177,6 +199,10 @@ enum {
 @end
 
 @class UIWindowScene;
+
+@interface UINavigationController : UIViewController
+@property (readonly) UIViewController *topViewController;
+@end
 
 @interface UIWindow (BLEScene)
 @property (readonly) UIWindowScene *windowScene;

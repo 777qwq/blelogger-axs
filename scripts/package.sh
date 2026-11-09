@@ -6,7 +6,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-VER=${VER:-1.2.1}
+VER=${VER:-1.3.0}
 BIN_DIR=${BIN_DIR:-/tmp/axsbuild}
 DEB="com.qwq.blelogger_${VER}_iphoneos-arm64.deb"
 
@@ -26,7 +26,6 @@ chmod 0644 "$DL/AxsBLELogger.plist"
 
 cp "$BIN_DIR/AxsBLELoggerPrefs" "$PB/AxsBLELoggerPrefs"
 cp AxsBLELoggerPrefs/Resources/Info.plist "$PB/Info.plist"
-cp AxsBLELoggerPrefs/Resources/AxsBLELoggerRoot.plist "$PB/AxsBLELoggerRoot.plist"
 cp AxsBLELoggerPrefs/Resources/icon@2x.png "$PB/icon@2x.png"
 # Preferences 按 "icon" 找 icon.png，直接用 @2x 那份顶上
 cp AxsBLELoggerPrefs/Resources/icon@2x.png "$PB/icon.png"
@@ -49,9 +48,9 @@ rm -f /var/jb/Library/PreferenceLoader/Preferences/BLELogger.plist
 killall -9 Preferences 2>/dev/null || true
 echo ""
 echo "=== BLE Logger ${VER} ==="
-echo "设置 -> BLE Logger：打开总开关，勾选要抓包的 App（不勾 = 全部）"
-echo "RootHide 用户：把「设置」和目标 App 都加进注入白名单"
-echo "然后从后台划掉目标 App，重新打开"
+echo "设置 -> BLE Logger：打开开关，填目标设备名（例如 iKF-Air Clip-APP）"
+echo "插件在 SpringBoard 里自己扫描、连接、订阅，目标设备不需要有 App"
+echo "改完配置 1-2 秒内生效，不用重启"
 echo ""
 exit 0
 EOF
@@ -63,9 +62,11 @@ case "$1" in
   purge)
     rm -f /var/mobile/Library/Preferences/ble-capture.log
     rm -f /var/mobile/Library/Preferences/com.qwq.blelogger.plist
+    rm -f /var/mobile/Library/Preferences/com.qwq.blelogger.capture.plist
     ;;
   remove)
     rm -f /var/mobile/Library/Preferences/ble-capture.log
+    rm -f /var/mobile/Library/Preferences/com.qwq.blelogger.capture.plist
     ;;
 esac
 exit 0
