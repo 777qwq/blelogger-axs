@@ -128,16 +128,6 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
     return row;
 }
 
-static PSSpecifier *AXValueRow(NSString *label, NSString *value) {
-    PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:label
-                                                     target:nil set:nil get:nil
-                                                     detail:nil
-                                                       cell:PSTitleValueCell
-                                                       edit:nil];
-    [row setProperty:value ?: @"" forKey:@"value"];
-    return row;
-}
-
 @implementation AxsBLELoggerRootListController
 
 #pragma mark - 数据
@@ -252,15 +242,12 @@ static PSSpecifier *AXValueRow(NSString *label, NSString *value) {
 
     // ---- 状态 ----
     NSArray *frames = self.frames;
+    NSString *state = self.frames.count
+        ? [NSString stringWithFormat:@"已记录 %lu 条。%@", (unsigned long)frames.count, self.stateText]
+        : @"还没有任何帧。确认开关是开的，然后把目标 App 从后台划掉重新打开，操作一遍。";
     PSSpecifier *statusGroup = AXGroup(@"状态");
-    [statusGroup setProperty:(frames.count == 0
-        ? @"还没有任何帧。确认开关是开的，然后把目标 App 从后台划掉重新打开，操作一遍。"
-        : [NSString stringWithFormat:@"已记录 %lu 条。开关关掉后新开的 App 不再抓，已经注入的 App 要重启才生效。",
-           (unsigned long)frames.count])
-                     forKey:@"footerText"];
+    [statusGroup setProperty:state forKey:@"footerText"];
     [items addObject:statusGroup];
-
-    [items addObject:AXValueRow(@"最近注入", self.stateText)];
 
     // ---- 最近值（按特征）----
     NSArray *latest = [self latestByCharacteristic];
