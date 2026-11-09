@@ -1,6 +1,6 @@
 Package: com.qwq.blelogger
 Name: BLE Logger
-Version: 1.2.0
+Version: 1.2.1
 Architecture: iphoneos-arm64
 Description: 抓取第三方 App 的 BLE 读写，悬浮球内查看、单条复制
  设置 -> BLE Logger：总开关 + 勾选要注入的 App（不勾 = 全部第三方 App）。

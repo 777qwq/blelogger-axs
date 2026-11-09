@@ -6,29 +6,35 @@ on:
 
 jobs:
   build:
-    # 构建链自包含：clang + ld64.lld + 仓库里的空存根，不依赖 Theos 与 Xcode
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # 必须在 macOS 上编：arm64e 切片需要 Apple 的 ld64（ptrauth / __AUTH /
+    # chained fixups），Linux 的 ld64.lld 明确不支持 arm64e。
+    # Settings.app 是 arm64e 进程，面板缺这个切片就会加载失败。
+    runs-on: macos-14
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装工具链
+      - name: 环境
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq clang lld dpkg-dev
-          clang --version | head -1
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          # macOS runner 没有 dpkg，打包那一步要用
+          brew install dpkg
 
-      - name: 构建
+      - name: 构建（arm64 + arm64e）
         run: |
-          chmod +x build-local.sh
-          ./build-local.sh
+          chmod +x scripts/*.sh build-local.sh
+          ./scripts/build-macos.sh
 
       - name: 检查产物
         run: |
           set -e
           DEB=$(ls com.qwq.blelogger_*_iphoneos-arm64.deb | head -1)
+          echo "== $DEB =="
           dpkg-deb -c "$DEB"
+          lipo -info build/var/jb/Library/PreferenceBundles/AxsBLELoggerPrefs.bundle/AxsBLELoggerPrefs
+          lipo -info build/var/jb/Library/MobileSubstrate/DynamicLibraries/AxsBLELogger.dylib
           python3 scripts/check_package.py "$DEB"
 
       - uses: actions/upload-artifact@v4
