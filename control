@@ -1,12 +1,16 @@
 Package: com.qwq.blelogger
 Name: BLE Logger
-Version: 1.4.1
+Version: 1.5.0
 Architecture: iphoneos-arm64
-Description: BLE 指令记录器：注入 App 抓收发，帧显示在设置面板
- 注入目标 App，hook CoreBluetooth 的写入和接收回调，把 App 发出的每个
- 指令、设备推回来的每一帧都记下来，落到
- /var/mobile/Library/Preferences/com.qwq.blelogger.app.plist。
- 设置 -> BLE Logger 里看最近值和最近 20 条帧，点按复制单条或全部。
+Description: BLE 指令记录器：直连扫描 + 注入 App 两路抓包，帧显示在设置面板
+ 两路同时抓，谁有数据算谁的：
+ 1. SpringBoard 常驻直连：插件自己当 Central 扫描、连接、订阅 Notify，
+    设备不需要有配套 App，也不需要注入任何东西。
+ 2. 注入目标 App：hook CoreBluetooth，收发双向都记，能看到 App 发出去的
+    指令（散热器这类必须靠 App 下发命令的设备靠这条）。
+ 数据落在 /var/mobile/Library/Caches/com.qwq.blelogger/，从 1.4.x 的
+ Preferences 目录搬出来了 —— 那个目录归 cfprefsd 管，直接写会被盖回去。
+ 设置 -> BLE Logger：开关、附近设备、最近值、最近 20 条帧，点按复制。
  只抓走 CoreBluetooth 的设备：散热器、耳机、手环、灯泡通用。
  单击调音量这类走经典蓝牙 AVRCP 的操作不会出现在这里。
 Maintainer: 777qwq

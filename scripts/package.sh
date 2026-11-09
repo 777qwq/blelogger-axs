@@ -6,7 +6,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-VER=${VER:-1.4.1}
+VER=${VER:-1.5.0}
 BIN_DIR=${BIN_DIR:-/tmp/axsbuild}
 DEB="com.qwq.blelogger_${VER}_iphoneos-arm64.deb"
 
@@ -45,12 +45,32 @@ rm -f /var/jb/Library/MobileSubstrate/DynamicLibraries/BLELogger.dylib
 rm -f /var/jb/Library/MobileSubstrate/DynamicLibraries/BLELogger.plist
 rm -rf /var/jb/Library/PreferenceBundles/BLELoggerPrefs.bundle
 rm -f /var/jb/Library/PreferenceLoader/Preferences/BLELogger.plist
+
+# 数据目录。1.4.x 放在 Library/Preferences 里，那个目录归 cfprefsd 管，
+# 我们直接写进去的字节会被 cfprefsd 用内存里的旧值盖回去，表现就是
+# 「设置改了不生效」。搬到 Caches 后没人管，权限也自己给足。
+mkdir -p /var/mobile/Library/Caches/com.qwq.blelogger
+chown mobile:mobile /var/mobile/Library/Caches/com.qwq.blelogger 2>/dev/null || true
+chmod 0777 /var/mobile/Library/Caches/com.qwq.blelogger 2>/dev/null || true
+
+# 同一份数据换目录了，旧文件搬过去（新文件已存在就不覆盖）
+for pair in "com.qwq.blelogger.plist:config.plist" \
+            "com.qwq.blelogger.capture.plist:capture.plist" \
+            "com.qwq.blelogger.app.plist:app.plist"; do
+  src=/var/mobile/Library/Preferences/${pair%%:*}
+  dst=/var/mobile/Library/Caches/com.qwq.blelogger/${pair##*:}
+  if [ -f "$src" ] && [ ! -f "$dst" ]; then
+    cp -f "$src" "$dst" 2>/dev/null || true
+  fi
+done
+
 killall -9 Preferences 2>/dev/null || true
 echo ""
 echo "=== BLE Logger ${VER} ==="
-echo "设置 -> BLE Logger：打开开关，填目标设备名（例如 iKF-Air Clip-APP）"
-echo "插件在 SpringBoard 里自己扫描、连接、订阅，目标设备不需要有 App"
-echo "改完配置 1-2 秒内生效，不用重启"
+echo "设置 -> BLE Logger：数据目录已换到 Caches，旧日志自动迁移"
+echo "两路抓包：直连扫描（SpringBoard 常驻）+ 注入 App（收发双向）"
+echo "注入不通不影响直连：在「附近设备」里点一台连上就能出帧"
+echo "装完建议注销一次（respring），让 SpringBoard 侧重新加载"
 echo ""
 exit 0
 EOF
@@ -60,9 +80,11 @@ cat > build/DEBIAN/postrm <<'EOF'
 set -e
 case "$1" in
   purge)
+    rm -rf /var/mobile/Library/Caches/com.qwq.blelogger
     rm -f /var/mobile/Library/Preferences/ble-capture.log
     rm -f /var/mobile/Library/Preferences/com.qwq.blelogger.plist
     rm -f /var/mobile/Library/Preferences/com.qwq.blelogger.capture.plist
+    rm -f /var/mobile/Library/Preferences/com.qwq.blelogger.app.plist
     ;;
   remove)
     rm -f /var/mobile/Library/Preferences/ble-capture.log

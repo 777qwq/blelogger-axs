@@ -3,13 +3,15 @@
 #import <Foundation/Foundation.h>
 #import <CoreBluetooth/CoreBluetooth.h>
 
-// 配置（面板写、SpringBoard 读）
+// 配置（面板写、SpringBoard / 注入的 App 读）
 NSString *AxsBLELoggerConfigPath(void);
 NSDictionary *AxsBLELoggerReadConfig(void);
 BOOL AxsBLELoggerWriteConfigKey(NSString *key, id value);
 
-// 抓包数据（SpringBoard 写、面板读）
-// frames: [{ t, dir, svc, chr, hex }]  最多 300 条，先进先出
+// 抓包数据，两个来源分开存（谁先写谁占，读的一方合并）：
+//   capture.plist —— SpringBoard 直连扫描抓到的，只有设备上行
+//   app.plist     —— 注入 App 的 hook 抓到的，收发双向
+// frames: [{ t, dir, svc, chr, hex, src? }]  最多 300 条，先进先出
 NSArray *AxsBLELoggerReadFrames(void);
 void AxsBLELoggerLoadFrames(void);
 void AxsBLELoggerAppendFrame(NSString *dir, NSString *svc, NSString *chr, NSString *hex);

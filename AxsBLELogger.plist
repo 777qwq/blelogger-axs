@@ -2,12 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- 和 rc-speaker-tile 的 PWProbe 一致：只注入有 UIApplication 的进程，
-         也就是用户能点开的 App。daemon 和 SpringBoard 里没有要抓的 BLE 通信，
-         注进去只会拖慢系统。
-         真正装不装 hook，由 AxsBLELoggerHookStart 再判一次（跳过 com.apple.*）。 -->
+    <!-- 两部分，OR 关系：
+         Bundles 显式点名 SpringBoard —— 直连扫描跑在这里。
+         Classes 覆盖所有有 UIApplication 的进程，也就是用户能点开的 App。
+         真正装什么由 AxsBLELoggerHookStart 按 bundle id 再分一次：
+         springboard 走扫描，com.apple.* 直接退出，其余装 CoreBluetooth hook。 -->
     <key>Filter</key>
     <dict>
+        <key>Bundles</key>
+        <array>
+            <string>com.apple.springboard</string>
+        </array>
         <key>Classes</key>
         <array>
             <string>UIApplication</string>

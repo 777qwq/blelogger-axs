@@ -1,19 +1,22 @@
-// 跨进程共享数据：SpringBoard 写，设置面板读。
+// 跨进程共享数据：SpringBoard / 目标 App 写，设置面板读。
 //
 // 配置文件与抓包数据分开，是因为写频率差三个数量级：
 // 配置一天改几次，帧一秒可能来十几条。混在一个 plist 里会让面板
-// 每次刷新都重读一遍配置，也让 SpringBoard 的高频写盘放大。
+// 每次刷新都重读一遍配置，也让高频写盘放大。
 //
 // 写盘全部走原子写（writeToFile:atomically:），Settings 读到的
 // 要么是旧版要么是新版，不会是半截文件。
+//
+// 路径本身见 AxsBLELoggerPaths.h —— 从 Preferences 搬到 Caches 的原因
+// 在那里写了，核心是 cfprefsd 会盖掉直接写入的字节。
 
 #import "AxsBLELoggerStore.h"
+#import "AxsBLELoggerPaths.h"
 #import <CoreFoundation/CoreFoundation.h>
 #import <dispatch/dispatch.h>
-extern char *getenv(const char *name);
 
-static NSString *const kConfigPath = @"/var/mobile/Library/Preferences/com.qwq.blelogger.plist";
-static NSString *const kDataPath   = @"/var/mobile/Library/Preferences/com.qwq.blelogger.capture.plist";
+#define kConfigPath AXSPath(@"config.plist")
+#define kDataPath   AXSPath(@"capture.plist")
 static const NSUInteger kMaxFrames   = 300;
 static const NSUInteger kMaxDevices  = 20;
 
@@ -27,6 +30,9 @@ static void axs_store_init(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         g_lock = [[NSLock alloc] init];
+        // 1.4.x 的旧文件在 Preferences 里，第一次跑新版时搬到新目录。
+        // 只在目标文件不存在时搬，不会覆盖已经抓到的新数据。
+        AXSMigrateLegacyFiles();
     });
 }
 
@@ -37,8 +43,10 @@ NSString *AxsBLELoggerConfigPath(void) {
 }
 
 NSDictionary *AxsBLELoggerReadConfig(void) {
+    axs_store_init();
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kConfigPath];
-    return [d isKindOfClass:[NSDictionary class]] ? d : @{};
+    if ([d isKindOfClass:[NSDictionary class]] && d.count) return d;
+    return @{};
 }
 
 BOOL AxsBLELoggerWriteConfigKey(NSString *key, id value) {
@@ -157,43 +165,17 @@ void AxsBLELoggerClearFrames(void) {
 
 #pragma mark - 注入式抓包（独立文件）
 
-static NSString *const kAppDataPath = @"/var/mobile/Library/Preferences/com.qwq.blelogger.app.plist";
+#define kAppDataPath AXSPath(@"app.plist")
 
-// 注入的代码跑在第三方 App 里，那些进程是有沙盒的：写
-// /var/mobile/Library/Preferences 可能直接失败（PWProbe 里那个
-// NSTemporaryDirectory 兜底就是为这个写的）。失败时退到自己容器的
-// Documents —— 面板读不到，但数据不丢，也能从"全局文件不存在"反推原因。
-static NSString *g_appPath = nil;
-static BOOL g_appPathProbed = NO;
+// 注入的代码跑在第三方 App 的沙盒里，能写哪里由 AXSDataDir 在运行时探测：
+// Caches → /var/tmp → 自己容器的 Documents。1.4.1 只探测两处而且写死
+// 文件名，结果是「文件写成功了，面板读不到」—— 因为面板不知道它退到了
+// 哪个 App 的容器里。现在探测统一在 Paths.h，面板那边会扫容器兜底。
+NSString *AxsBLELoggerAppDataPath(void) {
+    return kAppDataPath;
+}
 
 static NSMutableDictionary *axs_app_read_data(void);
-
-NSString *AxsBLELoggerAppDataPath(void) {
-    if (g_appPathProbed) return g_appPath ?: kAppDataPath;
-    g_appPathProbed = YES;
-
-    NSDictionary *probe = @{ @"t": @1 };
-    NSString *probePath = @"/var/mobile/Library/Preferences/.blelogger.probe";
-    if ([probe writeToFile:probePath atomically:YES]) {
-        [[NSFileManager defaultManager] removeItemAtPath:probePath error:NULL];
-        g_appPath = kAppDataPath;
-        return g_appPath;
-    }
-
-    const char *home = getenv("HOME");
-    if (home) {
-        NSString *docs = [[NSString stringWithUTF8String:home] stringByAppendingPathComponent:@"Documents"];
-        NSString *probe2 = [docs stringByAppendingPathComponent:@".blelogger.probe"];
-        if ([probe writeToFile:probe2 atomically:YES]) {
-            [[NSFileManager defaultManager] removeItemAtPath:probe2 error:NULL];
-            g_appPath = [docs stringByAppendingPathComponent:@"com.qwq.blelogger.app.plist"];
-            return g_appPath;
-        }
-    }
-
-    g_appPath = kAppDataPath;
-    return g_appPath;
-}
 
 // 诊断：哪些 App 被注入过。面板读这个列表就知道 hook 到底有没有进目标进程。
 void AxsBLELoggerNoteInjected(NSString *bid) {

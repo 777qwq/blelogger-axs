@@ -171,8 +171,25 @@ def main(deb):
     assert b"com.apple." in dylib, "抓包库没跳过系统进程"
     assert b"app.plist" in dylib, "抓包库没有抓包落盘路径"
 
+    # 1.5.0：SpringBoard 直连扫描必须也在里面，否则注入失败时无任何退路
+    assert b"com.apple.springboard" in dylib, "抓包库没有 SpringBoard 直连分支"
+    assert b"scanForPeripheralsWithServices" in dylib, "抓包库没有扫描实现"
+    assert b"setNotifyValue:forCharacteristic:" in dylib, "抓包库没有订阅 Notify"
+    # 存储位置：Caches 目录，且不能再往 Preferences 里写
+    assert b"/var/mobile/Library/Caches/com.qwq.blelogger" in dylib, "抓包库没有用新的数据目录"
+    assert b"config.plist" in dylib, "抓包库没有读新配置文件名"
+
+    # Filter 必须放行 SpringBoard
+    filt = plistlib.load(open(os.path.join(
+        base, "Library/MobileSubstrate/DynamicLibraries/AxsBLELogger.plist"), "rb"))
+    bundles = filt.get("Filter", {}).get("Bundles", [])
+    classes = filt.get("Filter", {}).get("Classes", [])
+    assert "com.apple.springboard" in bundles or "UIApplication" in classes, \
+        "Filter 既没点名 SpringBoard 也没放行 UIApplication"
+
     # 面板必须写回父类的 _specifiers，否则表格 0 行（1.3.0 的空白 bug）
     assert b"_specifiers" in prefs_bin, "面板没有引用 PSListController 的 _specifiers，界面会空白"
+    assert b"targetUUID" in prefs_bin, "面板没有直连目标选择，扫描器连不上设备"
 
     print("OK", deb)
 

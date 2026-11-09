@@ -11,7 +11,9 @@
 // 写在这里，Linux / macOS 两套工具链编译行为一致。
 
 #import "AxsBLELoggerStore.h"
+#import "AxsBLELoggerScanner.h"
 #import <CoreBluetooth/CoreBluetooth.h>
+#import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
 
@@ -136,18 +138,40 @@ static void AxsHookInstall(void) {
 
 #pragma mark - 入口
 
+// 面板改开关后立刻生效。原来只在注入那一刻读一次配置，用户在设置里
+// 关掉开关，正在跑的 App 还在继续记 —— 得把 App 划掉重开才停，
+// 看起来就像「开关没用」。
+static void axs_hook_prefs_changed(CFNotificationCenterRef center, void *observer,
+                                   CFStringRef name, const void *object, CFDictionaryRef info) {
+    id enabled = AxsBLELoggerReadConfig()[@"enabled"];
+    g_recordEnabled = enabled ? [enabled boolValue] : YES;
+}
+
 void AxsBLELoggerHookStart(void) {
     @autoreleasepool {
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
         if (bid.length == 0) return;
 
-        // 系统进程一律不装：抓的是第三方 App 的通信，塞进 SpringBoard、
-        // backboardd 这些进程只会拖慢系统，也没有要抓的东西。
+        // SpringBoard 不是「被注入的 App」，是插件自己的宿主：走直连扫描。
+        // 这一条是 1.4.1「注入不了 + 零数据」的补丁 —— 目标 App 注不进去时，
+        // 至少还有一条能出帧的路。
+        if ([bid isEqualToString:@"com.apple.springboard"]) {
+            AxsBLELoggerScannerStart();
+            return;
+        }
+
+        // 其他系统进程一律不装：抓的是第三方 App 的通信，塞进 backboardd
+        // 这些进程只会拖慢系统，也没有要抓的东西。
         if ([bid hasPrefix:@"com.apple."]) return;
 
         // 配置里没写 enabled 这个键（刚装好）时默认记录
         id enabled = AxsBLELoggerReadConfig()[@"enabled"];
         g_recordEnabled = enabled ? [enabled boolValue] : YES;
+
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+            NULL, axs_hook_prefs_changed,
+            CFSTR("com.qwq.blelogger.preferences-changed"), NULL,
+            CFNotificationSuspensionBehaviorDeliverImmediately);
 
         if (!NSClassFromString(@"CBPeripheral")) {
             dlopen("/System/Library/Frameworks/CoreBluetooth.framework/CoreBluetooth", RTLD_NOW);

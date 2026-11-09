@@ -1,32 +1,30 @@
 // 设置面板：只读写 plist，不碰蓝牙、不枚举已安装 App。
 //
-// 抓包跑在目标 App 自己的进程里（见 Sources/AxsBLELoggerHook.m），
-// 把帧写进 /var/mobile/Library/Preferences/com.qwq.blelogger.app.plist，
-// 面板只负责把这份文件渲染成列表。面板不持有蓝牙对象，所以面板崩了
-// 不影响抓包，反之亦然。
+// 数据有两个来源，面板合并显示：
+//   1. capture.plist —— SpringBoard 里跑的直连扫描，设备推上来的帧
+//   2. app.plist     —— 注入到目标 App 的 hook，收发双向
+// 谁有数据算谁的。1.4.1 只有第 2 条，注入失败时面板一片空，看不出问题在哪。
 //
 // 1.2.1 点进来就闪退的根因是这里调了 LSApplicationWorkspace 的
 // allInstalledApplications（iOS 16 已移除）。现在不需要 App 白名单，
 // 那段代码整个不存在。
 
 #import "AxsBLELoggerRootListController.h"
+#import "AxsBLELoggerPaths.h"
 #import <Preferences/PSSpecifier.h>
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 
-static NSString *const kConfigPath   = @"/var/mobile/Library/Preferences/com.qwq.blelogger.plist";
-static NSString *const kDataPath     = @"/var/mobile/Library/Preferences/com.qwq.blelogger.capture.plist";
-static NSString *const kAppDataPath  = @"/var/mobile/Library/Preferences/com.qwq.blelogger.app.plist";
+#define kConfigPath  AXSPath(@"config.plist")
+#define kDataPath    AXSPath(@"capture.plist")
+#define kAppDataPath AXSPath(@"app.plist")
+
 static NSString *const kPrefsChanged = @"com.qwq.blelogger.preferences-changed";
 static const NSUInteger kShowFrames  = 20;
 static const NSUInteger kShowLatest  = 6;
-
-static NSDictionary *AXRead(NSString *path) {
-    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:path];
-    return [d isKindOfClass:[NSDictionary class]] ? d : @{};
-}
+static const NSUInteger kShowDevices = 8;
 
 static NSString *AXString(id v) {
     return [v isKindOfClass:[NSString class]] ? v : nil;
@@ -34,7 +32,8 @@ static NSString *AXString(id v) {
 
 static BOOL AXWriteConfig(NSString *key, id value) {
     if (key.length == 0) return NO;
-    NSMutableDictionary *d = [AXRead(kConfigPath) mutableCopy];
+    // 读的时候要跨目录找（配置可能还躺在旧位置），写固定写本进程目录
+    NSMutableDictionary *d = [AXSReadAnyFile(@"config.plist", NULL) mutableCopy];
     if (value) {
         d[key] = value;
     } else {
@@ -42,7 +41,7 @@ static BOOL AXWriteConfig(NSString *key, id value) {
     }
     BOOL ok = [d writeToFile:kConfigPath atomically:YES];
     if (ok) {
-        // 已经跑起来的 App 不会重新读配置，这个通知留给以后的运行时开关用
+        // SpringBoard 侧的扫描器靠这条通知重读配置（换目标设备、开关）
         CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
             (__bridge CFStringRef)kPrefsChanged, NULL, NULL, 1);
     }
@@ -63,6 +62,8 @@ static NSString *AXSpaceHex(NSString *hex) {
 @interface AxsBLELoggerRootListController ()
 @property (nonatomic, strong) NSTimer *tickTimer;
 @property (nonatomic, assign) NSUInteger lastCount;
+// 容器扫描结果，进页面时清一次
+@property (nonatomic, strong) NSArray *appDataCache;
 @end
 
 // PSButtonCell 被点时，会把 specifier 上的 action 发给 target。
@@ -132,25 +133,89 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
 
 #pragma mark - 数据
 
-- (NSDictionary *)config { return AXRead(kConfigPath); }
-- (NSDictionary *)capture { return AXRead(kDataPath); }
-- (NSDictionary *)appData { return AXRead(kAppDataPath); }
+- (NSDictionary *)config { return AXSReadAnyFile(@"config.plist", NULL); }
+- (NSDictionary *)capture { return AXSReadAnyFile(@"capture.plist", NULL); }
 
-// 被注入过的 App 列表 —— 判断故障出在"没注入"还是"注入了没抓到"靠这个
-- (NSArray *)injected {
-    NSArray *a = self.appData[@"injected"];
-    return [a isKindOfClass:[NSArray class]] ? a : @[];
+// 注入方的数据可能不在全局目录里：目标 App 是沙盒进程，写不进 Caches 时
+// 会退到自己容器的 Documents。1.4.1 就是栽在这里 —— 数据写成功了，
+// 面板只认固定路径，读不到就说「被沙盒挡住了」。
+// 这里在主路径为空时扫一遍容器，代价是几百次 stat，只在需要时做一次。
+- (NSArray *)appDataFiles {
+    if (self.appDataCache) return self.appDataCache;
+
+    NSDictionary *main = AXSReadAnyFile(@"app.plist", NULL);
+    if (main.count) {
+        self.appDataCache = @[main];
+        return self.appDataCache;
+    }
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *root = @"/var/mobile/Containers/Data/Application";
+    NSMutableArray *found = [NSMutableArray array];
+    for (NSString *uuid in [fm contentsOfDirectoryAtPath:root error:NULL]) {
+        NSString *p = [[root stringByAppendingPathComponent:uuid]
+                       stringByAppendingPathComponent:@"Documents/app.plist"];
+        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:p];
+        if ([d isKindOfClass:[NSDictionary class]] && d.count) [found addObject:d];
+    }
+    self.appDataCache = found;
+    return self.appDataCache;
 }
 
-// 抓包数据只有注入模式这一个来源
+- (NSArray *)injected {
+    NSMutableArray *all = [NSMutableArray array];
+    for (NSDictionary *d in [self appDataFiles]) {
+        NSArray *a = d[@"injected"];
+        if ([a isKindOfClass:[NSArray class]]) [all addObjectsFromArray:a];
+    }
+    return all;
+}
+
+// 两路帧合并，按时间排。扫描帧没有 src 字段，统一补成 scan / app。
 - (NSArray *)frames {
-    NSArray *f = AXRead(kAppDataPath)[@"frames"];
-    return [f isKindOfClass:[NSArray class]] ? f : @[];
+    NSMutableArray *all = [NSMutableArray array];
+
+    NSArray *scan = self.capture[@"frames"];
+    if ([scan isKindOfClass:[NSArray class]]) {
+        for (NSDictionary *f in scan) {
+            if (![f isKindOfClass:[NSDictionary class]]) continue;
+            if (f[@"src"]) { [all addObject:f]; continue; }
+            NSMutableDictionary *m = [f mutableCopy];
+            m[@"src"] = @"scan";
+            [all addObject:m];
+        }
+    }
+
+    for (NSDictionary *d in [self appDataFiles]) {
+        NSArray *app = d[@"frames"];
+        if (![app isKindOfClass:[NSArray class]]) continue;
+        for (NSDictionary *f in app) {
+            if (![f isKindOfClass:[NSDictionary class]]) continue;
+            if (f[@"src"]) { [all addObject:f]; continue; }
+            NSMutableDictionary *m = [f mutableCopy];
+            m[@"src"] = @"app";
+            [all addObject:m];
+        }
+    }
+
+    [all sortUsingComparator:^NSComparisonResult(NSDictionary *x, NSDictionary *y) {
+        return [(AXString(x[@"t"]) ?: @"") compare:(AXString(y[@"t"]) ?: @"")];
+    }];
+    return all;
+}
+
+- (NSArray *)devices {
+    NSArray *d = self.capture[@"devices"];
+    return [d isKindOfClass:[NSArray class]] ? d : @[];
+}
+
+- (NSString *)targetUUID {
+    return AXString(self.config[@"targetUUID"]) ?: @"";
 }
 
 - (NSString *)stateText {
     NSString *s = AXString(self.capture[@"state"]);
-    return s.length ? s : @"还没有 App 上报，打开目标 App 操作一次再看";
+    return s.length ? s : @"还没有数据上报";
 }
 
 // 每个特征只留最新一帧，用来一眼看出哪个值在变
@@ -174,6 +239,8 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    // 容器扫描很慢，只在进页面时做一次，tick 刷新复用结果
+    self.appDataCache = nil;
     self.lastCount = self.frames.count;
     [self.tickTimer invalidate];
     // 帧数没变就不重建列表，避免每秒闪一下
@@ -233,8 +300,8 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
 
     // ---- 概览 ----
     PSSpecifier *intro = AXGroup(@"BLE Logger");
-    [intro setProperty:@"注入目标 App，hook CoreBluetooth 的写入和接收回调，把每一帧记下来。"
-                       @"这里只是查看器，不需要保持打开。"
+    [intro setProperty:@"两路同时抓：SpringBoard 直连扫描（不需要 App）+ 注入目标 App 的 "
+                       @"CoreBluetooth hook（能抓到 App 发出去的帧）。这里只是查看器。"
      forKey:@"footerText"];
     [items addObject:intro];
 
@@ -249,16 +316,22 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
 
     // ---- 状态 ----
     NSArray *frames = self.frames;
-    NSString *state = self.frames.count
-        ? [NSString stringWithFormat:@"已记录 %lu 条。%@", (unsigned long)frames.count, self.stateText]
-        : @"还没有任何帧。确认开关是开的，然后把目标 App 从后台划掉重新打开，操作一遍。";
+    NSString *state;
+    if (self.frames.count) {
+        state = [NSString stringWithFormat:@"已记录 %lu 条。%@", (unsigned long)frames.count, self.stateText];
+    } else {
+        state = @"还没有任何帧。开启后把目标 App 从后台划掉重开，操作一遍；"
+                 "或者直接在下面「附近设备」里选一台连上。";
+    }
+    state = [state stringByAppendingFormat:@"\n数据目录：%@", AXSDataDirDescription()];
+
     PSSpecifier *statusGroup = AXGroup(@"状态");
     [statusGroup setProperty:state forKey:@"footerText"];
     [items addObject:statusGroup];
 
     // ---- 已注入的 App（诊断）----
     // 空白面板最常见的原因不是抓不到，是 hook 压根没进目标 App。
-    // 这个列表为空 = 注入没成功；有目标 App = 注入了但没抓到 BLE 调用。
+    // 这个列表为空 = 注入没成功，那就得靠下面的直连扫描。
     NSArray *injected = [self injected];
     PSSpecifier *injectGroup = AXGroup(
         [NSString stringWithFormat:@"已注入的 App（%lu）", (unsigned long)injected.count]);
@@ -266,20 +339,57 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
     NSMutableString *injectText = [NSMutableString string];
     if (injected.count == 0) {
         [injectText appendString:
-            @"一个都没有。说明 hook 没进任何 App：开关刚打开的需要把 App 划掉重开；"
-            @"RootHide 用户还要把这个 App 加进注入白名单。"];
+            @"一个都没有 —— hook 没进任何 App。先把目标 App 从后台划掉重开；"
+            @"RootHide 环境还要把它加进注入白名单。注入不通不影响下面的直连扫描。"];
     } else {
         for (NSDictionary *e in injected) {
             if (![e isKindOfClass:[NSDictionary class]]) continue;
             [injectText appendFormat:@"%@  %@\n", AXString(e[@"t"]) ?: @"", AXString(e[@"bid"]) ?: @"?"];
         }
-        NSUInteger n = self.appData.count;
-        if (n == 0) {
-            [injectText appendString:@"数据文件读不到：写入被沙盒挡住了。"];
-        }
     }
     [injectGroup setProperty:injectText forKey:@"footerText"];
     [items addObject:injectGroup];
+
+    // ---- 附近设备 / 直连目标 ----
+    // 注入抓不到东西时，用户得有个办法让扫描器连上设备。没选目标时
+    // 扫描器只列表不连接，所以这一步是「让它开始抓」的开关。
+    NSArray *devices = self.devices;
+    NSString *uuid = [self targetUUID];
+    NSString *targetLabel = uuid.length
+        ? [NSString stringWithFormat:@"直连目标：%@", [[uuid componentsSeparatedByString:@"-"] firstObject]]
+        : @"直连目标：未选择";
+
+    PSSpecifier *devGroup = AXGroup(
+        [NSString stringWithFormat:@"附近设备（%lu）", (unsigned long)devices.count]);
+    NSString *devFooter = devices.count
+        ? [NSString stringWithFormat:@"%@\n点一台设备开始直连抓包（只收设备推上来的帧）。再点一次取消。",
+           targetLabel]
+        : [NSString stringWithFormat:@"%@\n还没扫到设备。蓝牙要在打开状态，设备要在广播。",
+           targetLabel];
+    [devGroup setProperty:devFooter forKey:@"footerText"];
+    [items addObject:devGroup];
+
+    NSUInteger shown = 0;
+    for (NSDictionary *d in devices) {
+        if (shown++ >= kShowDevices) break;
+        NSString *u = AXString(d[@"uuid"]) ?: @"";
+        NSString *n = AXString(d[@"name"]) ?: @"";
+        if (!u.length) continue;
+
+        BOOL selected = [u caseInsensitiveCompare:uuid] == NSOrderedSame;
+        NSString *label = [NSString stringWithFormat:@"%@ %@  %@",
+                           selected ? @"✓" : @"　",
+                           n.length ? n : @"(无名)",
+                           u.length > 8 ? [u substringToIndex:8] : u];
+
+        PSSpecifier *row = AXButtonRow(label, self, @selector(toggleTarget:));
+        [row setProperty:u forKey:@"axs_uuid"];
+        [items addObject:row];
+    }
+
+    if (uuid.length) {
+        [items addObject:AXButtonRow(@"清除直连目标", self, @selector(clearTarget:))];
+    }
 
     // ---- 最近值（按特征）----
     NSArray *latest = [self latestByCharacteristic];
@@ -317,10 +427,12 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
             NSString *dir = AXString(f[@"dir"]) ?: @"?";
             NSString *chr = AXString(f[@"chr"]) ?: @"?";
             NSString *short8 = chr.length > 8 ? [chr substringToIndex:8] : chr;
+            // 直 = SpringBoard 直连扫到的，注 = 从目标 App 里 hook 到的
+            NSString *tag = [AXString(f[@"src"]) isEqualToString:@"app"] ? @"注" : @"直";
 
             PSSpecifier *row = AXButtonRow(
-                [NSString stringWithFormat:@"%@ %@ %@  %@",
-                 t, dir, short8, AXSpaceHex(AXString(f[@"hex"]))],
+                [NSString stringWithFormat:@"%@ %@(%@) %@  %@",
+                 t, dir, tag, short8, AXSpaceHex(AXString(f[@"hex"]))],
                 self, @selector(copyFrame:));
             [row setProperty:f forKey:@"axs_frame"];
             [items addObject:row];
@@ -347,15 +459,54 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
     return v ? @([v boolValue]) : @YES;
 }
 
+- (void)refresh {
+    [self specifiers];
+    [self reloadSpecifiers];
+}
+
 - (void)setEnabled:(id)value specifier:(PSSpecifier *)specifier {
     AXWriteConfig(@"enabled", @([value boolValue]));
 
     __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        [weakSelf specifiers];
-        [weakSelf reloadSpecifiers];
+        [weakSelf refresh];
     });
+}
+
+#pragma mark - 直连目标
+
+- (void)toggleTarget:(PSSpecifier *)specifier {
+    NSString *uuid = AXString([specifier propertyForKey:@"axs_uuid"]);
+    if (uuid.length == 0) return;
+
+    if ([uuid caseInsensitiveCompare:[self targetUUID]] == NSOrderedSame) {
+        [self clearTarget:specifier];
+        return;
+    }
+
+    // 名字一起存：UUID 是主键，名字是兜底。设备重连后 UUID 不变，
+    // 但广播名偶尔改（"XXX-APP" 之类），只存名字会匹配不上。
+    NSString *name = @"";
+    for (NSDictionary *d in self.devices) {
+        if ([AXString(d[@"uuid"]) isEqualToString:uuid]) {
+            name = AXString(d[@"name"]) ?: @"";
+            break;
+        }
+    }
+
+    AXWriteConfig(@"targetUUID", uuid);
+    AXWriteConfig(@"deviceName", name);
+    [self refresh];
+    [self toast:name.length ? [NSString stringWithFormat:@"已选 %@，回状态栏看看", name]
+                            : @"已选这台设备"];
+}
+
+- (void)clearTarget:(PSSpecifier *)specifier {
+    AXWriteConfig(@"targetUUID", nil);
+    AXWriteConfig(@"deviceName", nil);
+    [self refresh];
+    [self toast:@"已清除直连目标"];
 }
 
 #pragma mark - 点选兜底
@@ -415,12 +566,14 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
     if (frames.count == 0) return;
 
     NSMutableString *out = [NSMutableString string];
-    [out appendFormat:@"# BLE Logger %lu 条\n", (unsigned long)frames.count];
+    [out appendFormat:@"# BLE Logger %lu 条（直=直连扫描 注=注入 hook）\n", (unsigned long)frames.count];
     for (NSDictionary *f in frames) {
         if (![f isKindOfClass:[NSDictionary class]]) continue;
-        [out appendFormat:@"%@ %@ %@ %@\n",
+        NSString *tag = [AXString(f[@"src"]) isEqualToString:@"app"] ? @"注" : @"直";
+        [out appendFormat:@"%@ %@(%@) %@ %@\n",
             AXString(f[@"t"]) ?: @"",
             AXString(f[@"dir"]) ?: @"",
+            tag,
             AXString(f[@"chr"]) ?: @"?",
             AXSpaceHex(AXString(f[@"hex"]))];
     }
@@ -430,12 +583,16 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
 }
 
 - (void)clearFrames:(PSSpecifier *)specifier {
-    [@{} writeToFile:kAppDataPath atomically:YES];
-    [@{} writeToFile:kDataPath atomically:YES];
-
+    // 三个候选目录都清一遍，否则下一次读又会把 /var/tmp 或旧位置里的
+    // 老数据捞回来，看起来像"清不掉"。
+    for (NSString *dir in @[AXSDataDir(), AXS_DIR_MAIN, AXS_DIR_TMP, AXS_DIR_LEGACY]) {
+        [@{} writeToFile:[dir stringByAppendingPathComponent:@"capture.plist"] atomically:YES];
+        [@{} writeToFile:[dir stringByAppendingPathComponent:@"app.plist"] atomically:YES];
+    }
+    self.appDataCache = nil;
     self.lastCount = 0;
-    [self specifiers];
-    [self reloadSpecifiers];
+
+    [self refresh];
     [self toast:@"已清空"];
 }
 
