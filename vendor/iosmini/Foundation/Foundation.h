@@ -151,6 +151,11 @@ enum { NSOrderedAscending = -1, NSOrderedSame = 0, NSOrderedDescending = 1 };
 - (void)removeAllObjects;
 @end
 
+@interface NSException : NSObject
+@property (readonly) NSString *name;
+@property (readonly) NSString *reason;
+@end
+
 @interface NSLock : NSObject
 - (void)lock;
 - (void)unlock;

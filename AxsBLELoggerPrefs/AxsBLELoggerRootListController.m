@@ -75,6 +75,33 @@ static void AXSetCellAction(PSSpecifier *spec, SEL action) {
     }
 }
 
+// 分组头：不同 iOS 版本的 PSSpecifier 工厂方法名不一样，逐个探测，
+// 最后退回最老最稳的 preferenceSpecifierNamed:+PSGroupCell。
+// 早先直接调 groupSpecifierWithName:，万一系统没这个方法就是
+// unrecognized selector —— 整个 -specifiers 抛异常，页面就是白的。
+static PSSpecifier *AXGroup(NSString *title) {
+    Class c = [PSSpecifier class];
+    id (*send0)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
+    id (*send1)(id, SEL, id) = (id (*)(id, SEL, id))objc_msgSend;
+
+    PSSpecifier *spec = nil;
+    if ([c respondsToSelector:@selector(groupSpecifierWithName:)]) {
+        spec = send1(c, @selector(groupSpecifierWithName:), title ?: @"");
+    } else if ([c respondsToSelector:@selector(groupSpecifier)]) {
+        spec = send0(c, @selector(groupSpecifier));
+    } else if ([c respondsToSelector:@selector(emptyGroupSpecifier)]) {
+        spec = send0(c, @selector(emptyGroupSpecifier));
+    }
+    if (!spec) {
+        spec = [PSSpecifier preferenceSpecifierNamed:title ?: @""
+                                             target:nil set:nil get:nil
+                                             detail:nil cell:PSGroupCell edit:nil];
+        return spec;
+    }
+    if (title.length) [spec setProperty:title forKey:@"label"];
+    return spec;
+}
+
 static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
     PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:label
                                                      target:target
@@ -144,16 +171,45 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
     if (self.navigationController && self.navigationController.topViewController != self) return;
     if (self.frames.count == self.lastCount) return;
     self.lastCount = self.frames.count;
+    // 先重建一份塞进 _specifiers，再让表格刷新 —— 只调 reloadSpecifiers
+    // 有些版本会拿旧的 ivar 重画，界面上什么都不会变。
+    [self specifiers];
     [self reloadSpecifiers];
 }
 
 #pragma mark - 列表
 
+// 关键：PSListController 的表格数据源读的是 _specifiers 这个 ivar，
+// 不是 -specifiers 的返回值。只 return 不赋值 = 0 行 = 一片空白。
+// 1.2.1 能用就是因为里面有 `_specifiers = items;`，1.3.0 重写时漏了这句。
 - (NSMutableArray *)specifiers {
+    NSMutableArray *items = nil;
+    @try {
+        items = [self axsBuildSpecifiers];
+    } @catch (NSException *e) {
+        // 宁可显示一行错误，也不要给用户一页白板
+        items = [NSMutableArray array];
+        PSSpecifier *g = AXGroup(@"面板出错");
+        [g setProperty:[NSString stringWithFormat:@"%@：%@", e.name, e.reason ?: @"未知"]
+                forKey:@"footerText"];
+        [items addObject:g];
+    }
+    if (!items) items = [NSMutableArray array];
+    _specifiers = items;
+    return items;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    // 有些版本的 Preferences 不会主动调 -specifiers，这里先填一次
+    [self specifiers];
+}
+
+- (NSMutableArray *)axsBuildSpecifiers {
     NSMutableArray *items = [NSMutableArray array];
 
     // ---- 概览 ----
-    PSSpecifier *intro = [PSSpecifier groupSpecifierWithName:@"BLE Logger"];
+    PSSpecifier *intro = AXGroup(@"BLE Logger");
     [intro setProperty:@"插件在 SpringBoard 里自己当中心设备：扫描、连接、订阅全部 Notify 特征，"
                        @"把设备推上来的帧记下来。不注入任何 App，设备没有配套 App 也能用。"
                 forKey:@"footerText"];
@@ -186,7 +242,7 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
         targetDesc = [NSString stringWithFormat:@"%@…", uuid];
     }
 
-    PSSpecifier *devGroup = [PSSpecifier groupSpecifierWithName:@"目标设备"];
+    PSSpecifier *devGroup = AXGroup(@"目标设备");
     [devGroup setProperty:[NSString stringWithFormat:@"当前：%@\n点下面的设备直接设为目标；设备没名字时也能按 UUID 认。",
                            targetDesc]
                    forKey:@"footerText"];
@@ -243,7 +299,7 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
     }
 
     if (chrOrder.count) {
-        PSSpecifier *latestGroup = [PSSpecifier groupSpecifierWithName:@"最近值（按特征）"];
+        PSSpecifier *latestGroup = AXGroup(@"最近值（按特征）");
         [latestGroup setProperty:@"同一特征只留最后一帧，完整日志在下面。点按复制这一帧。"
                           forKey:@"footerText"];
         [items addObject:latestGroup];
@@ -263,8 +319,8 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
     }
 
     // ---- 日志 ----
-    PSSpecifier *frameGroup = [PSSpecifier groupSpecifierWithName:
-        [NSString stringWithFormat:@"最近帧（共 %lu 条，点按复制）", (unsigned long)frames.count]];
+    PSSpecifier *frameGroup = AXGroup(
+        [NSString stringWithFormat:@"最近帧（共 %lu 条，点按复制）", (unsigned long)frames.count]);
     [frameGroup setProperty:@"时间 + 方向 + HEX。设备推上来的帧方向是「收」。"
                     forKey:@"footerText"];
     [items addObject:frameGroup];
@@ -288,7 +344,7 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
         }
     }
 
-    PSSpecifier *actions = [PSSpecifier groupSpecifierWithName:@""];
+    PSSpecifier *actions = AXGroup(@"");
     [items addObject:actions];
 
     PSSpecifier *copyAll = AXButtonRow(@"复制全部日志", self, @selector(copyAll:));
@@ -313,6 +369,7 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
     __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
+        [weakSelf specifiers];
         [weakSelf reloadSpecifiers];
     });
 }
@@ -323,11 +380,6 @@ static PSSpecifier *AXButtonRow(NSString *label, id target, SEL action) {
 // AXSetCellAction 会写失败。这时按钮不会自己派发，由这里接手。
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-
-    if (g_axsCellActionWritable) {
-        // 正常情况：PSButtonCell 自己已经把 action 发出去了，不再重复执行
-        return;
-    }
 
     PSSpecifier *spec = nil;
     if ([self respondsToSelector:@selector(specifierAtIndexPath:)]) {

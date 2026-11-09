@@ -6,7 +6,7 @@ enum {
     PSGroupCell  = 0,
     PSLinkCell   = 1,
     PSButtonCell = 13,
-    PSTitleValueCell = 3,
+    PSTitleValueCell = 4,
     PSSwitchCell = 6
 };
 
