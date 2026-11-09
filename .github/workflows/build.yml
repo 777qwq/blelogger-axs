@@ -45,9 +45,13 @@ jobs:
           export LD_LIBRARY_PATH=/opt/tc/linux/iphone/lib:${LD_LIBRARY_PATH:-}
           export LDID=/opt/tc/linux/iphone/bin/ldid
           export LIPO=/opt/tc/linux/iphone/bin/lipo
+          export CLANG=/opt/tc/linux/iphone/bin/clang
           echo "ld64 = $LD64"
           "$LD64" -v 2>&1 | head -5 || true
-          APPLE_LD64="$LD64" ./scripts/build-toolchain.sh
+          "$CLANG" --version | head -3
+          echo "--- ptrauth 选项 ---"
+          "$CLANG" --help 2>&1 | grep -i ptrauth | head -8 || true
+          APPLE_LD64="$LD64" CLANG="$CLANG" ./scripts/build-toolchain.sh
 
       - name: 检查产物
         run: |
