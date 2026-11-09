@@ -31,13 +31,18 @@ jobs:
           ls -la /tmp/tc.tar.xz
           mkdir -p /opt/tc
           tar -xJf /tmp/tc.tar.xz -C /opt/tc
-          find /opt/tc -maxdepth 5 -type f \( -name ld64 -o -name ldid \) | head -10
+          echo "== bin 目录 =="
+          ls -la /opt/tc/linux/iphone/bin/ | head -40
+          echo "== 找 ld64 =="
+          find /opt/tc -name 'ld*' | head -20
 
       - name: 构建（arm64 + arm64e）
         run: |
           set -e
           chmod +x scripts/*.sh
-          LD64=$(find /opt/tc -type f -name ld64 | head -1)
+          LD64=$(find /opt/tc -name 'ld64' | head -1)
+          [ -n "$LD64" ] || LD64=$(find /opt/tc -name 'ld64-*' | head -1)
+          [ -n "$LD64" ] || { echo "没有找到 ld64"; ls /opt/tc/linux/iphone/bin; exit 1; }
           echo "ld64 = $LD64"
           APPLE_LD64="$LD64" ./scripts/build-toolchain.sh
 
