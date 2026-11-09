@@ -36,7 +36,10 @@ build_arch() {
     Sources/*.m "$BIN_DIR/Hooks.m" \
     -o "$BIN_DIR/${TARGET_DYLIB}_${A}.dylib"
 
-  "$CC" -target "$A-apple-ios15.0" "${COMMON[@]}" -bundle \
+  # Preferences 是私有框架，SDK 里没有它的头。只补 Preferences/ 这一层，
+  # 不要整个 -Ivendor/iosmini —— 那样精简版的 Foundation/UIKit 会盖掉真 SDK 的，
+  # 声明缺一大截反而编不过。
+  "$CC" -target "$A-apple-ios15.0" "${COMMON[@]}" -Ivendor/prefs-headers -bundle \
     -framework UIKit -framework Foundation -framework CoreFoundation \
     AxsBLELoggerPrefs/*.m \
     -o "$BIN_DIR/AxsBLELoggerPrefs_${A}"
