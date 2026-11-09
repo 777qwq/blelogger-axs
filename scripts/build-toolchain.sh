@@ -19,7 +19,9 @@ BIN_DIR=${BIN_DIR:-/tmp/axsbuild}
 : "${APPLE_LD64:?需要 APPLE_LD64 指向 Apple ld64（Linux 移植版）}"
 [ -x "$APPLE_LD64" ] || { echo "APPLE_LD64 不可执行：$APPLE_LD64"; exit 1; }
 
-if command -v ldid >/dev/null 2>&1; then
+if [ -n "${LDID:-}" ]; then
+  :
+elif command -v ldid >/dev/null 2>&1; then
   LDID=ldid
 elif [ -x "$(dirname "$APPLE_LD64")/ldid" ]; then
   LDID=$(dirname "$APPLE_LD64")/ldid
@@ -80,7 +82,7 @@ PY
 build_arch arm64
 build_arch arm64e
 
-LIPO=llvm-lipo
+LIPO=${LIPO:-llvm-lipo}
 command -v $LIPO >/dev/null 2>&1 || LIPO=lipo
 
 $LIPO -create "$BIN_DIR/${TARGET_DYLIB}_arm64.dylib" "$BIN_DIR/${TARGET_DYLIB}_arm64e.dylib" \

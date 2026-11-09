@@ -40,10 +40,13 @@ jobs:
         run: |
           set -e
           chmod +x scripts/*.sh
-          LD64=$(find /opt/tc -name 'ld64' | head -1)
-          [ -n "$LD64" ] || LD64=$(find /opt/tc -name 'ld64-*' | head -1)
-          [ -n "$LD64" ] || { echo "没有找到 ld64"; ls /opt/tc/linux/iphone/bin; exit 1; }
+          LD64=/opt/tc/linux/iphone/bin/ld
+          [ -x "$LD64" ] || { echo "没有找到 ld"; ls /opt/tc/linux/iphone/bin; exit 1; }
+          export LD_LIBRARY_PATH=/opt/tc/linux/iphone/lib:${LD_LIBRARY_PATH:-}
+          export LDID=/opt/tc/linux/iphone/bin/ldid
+          export LIPO=/opt/tc/linux/iphone/bin/lipo
           echo "ld64 = $LD64"
+          "$LD64" -v 2>&1 | head -5 || true
           APPLE_LD64="$LD64" ./scripts/build-toolchain.sh
 
       - name: 检查产物
